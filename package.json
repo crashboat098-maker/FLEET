@@ -1,0 +1,21 @@
+{
+  "name": "fleet-io",
+  "description": "FLEET.IO V2: Captain's Legacy — a retro pixel-art naval adventure built with Phaser, TypeScript and Vite.",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --config vite/config.dev.mjs",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit && vite build --config vite/config.prod.mjs",
+    "preview": "vite preview --config vite/config.prod.mjs"
+  },
+  "dependencies": {
+    "phaser": "4.0.0"
+  },
+  "devDependencies": {
+    "terser": "^5.39.0",
+    "typescript": "~5.7.2",
+    "vite": "^6.3.1"
+  }
+}

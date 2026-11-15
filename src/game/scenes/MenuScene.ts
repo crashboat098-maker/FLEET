@@ -26,7 +26,10 @@ export class MenuScene extends Scene {
 
         this.ocean = new OceanBackdrop(this);
         this.buildScenery();
-        new ShipSprite(this, 470, 262, 90).setDepth(5);
+        // Parked ship heading east; the wake drifts west to sell the motion.
+        new ShipSprite(this, 470, 262, Math.PI / 2, { wakeDrift: { x: -34, y: 0 }, wakeDepth: 4 })
+            .setDepth(5)
+            .setSailing(0.8);
         this.buildTitle();
 
         new PixelButton(this, GAME_WIDTH / 2, 214, 'PLAY', () => this.startVoyage()).setDepth(20);
@@ -73,8 +76,8 @@ export class MenuScene extends Scene {
     private buildTitle(): void {
         const cx = GAME_WIDTH / 2;
         const ty = 82;
-        const scale = 5;
-        const shadow = pixelText(this, cx + 5, ty + 5, GAME_TITLE, Fonts.TitleShadow, scale).setAlpha(0.45).setDepth(18);
+        const scale = 6;
+        const shadow = pixelText(this, cx + 6, ty + 6, GAME_TITLE, Fonts.TitleShadow, scale).setAlpha(0.45).setDepth(18);
         const title = pixelText(this, cx, ty, GAME_TITLE, Fonts.Title, scale).setDepth(19);
         this.tweens.add({ targets: [title, shadow], y: '-=3', duration: 1600, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
 

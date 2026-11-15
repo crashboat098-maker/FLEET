@@ -4,7 +4,7 @@
  * The game renders at a low 16:9 internal resolution and is scaled up with
  * nearest-neighbour filtering, which keeps every pixel chunky and crisp.
  */
-export const GAME_TITLE = 'FLEET.IO';
+export const GAME_TITLE = 'FLEET';
 export const GAME_SUBTITLE = "CAPTAIN'S LEGACY";
 export const GAME_VERSION = '0.1.0';
 
@@ -19,7 +19,9 @@ export const PIXEL_SCALE = 2;
 export const SceneKeys = {
     Boot: 'Boot',
     Menu: 'Menu',
-    Ocean: 'Ocean'
+    Ocean: 'Ocean',
+    Hud: 'Hud',
+    Port: 'Port'
 } as const;
 
 export type SceneKey = (typeof SceneKeys)[keyof typeof SceneKeys];

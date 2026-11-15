@@ -1,6 +1,9 @@
 import { Scene } from 'phaser';
 import { Palette } from '../config/palette';
-import { createRng, mirrorRows, PixelCanvas, textureFromRows } from './pixelCanvas';
+import { createRng, PixelCanvas, textureFromRows } from './pixelCanvas';
+import { generateItemTextures } from './itemTextures';
+import { generatePortTextures } from './portTextures';
+import { generateShipTextures } from './shipTextures';
 
 /**
  * Procedurally generated placeholder art. Swap any of these for hand-made
@@ -10,7 +13,7 @@ export const TextureKeys = {
     OceanTile: 'ocean-tile',
     Wave: 'wave',
     Sparkle: 'sparkle',
-    Sloop: 'ship-sloop',
+    Speck: 'speck',
     Island: 'island',
     Palm: 'palm',
     Dock: 'dock',
@@ -56,58 +59,9 @@ const makeWave = (scene: Scene): void =>
 const makeSparkle = (scene: Scene): void =>
     textureFromRows(scene, TextureKeys.Sparkle, ['.#.', '###', '.#.'], { '#': Palette.foamWhite });
 
-/** Top-down pirate sloop, bow pointing up. Left half + centre column, mirrored. */
-const makeSloop = (scene: Scene): void => {
-    const half = [
-        '.......o',
-        '......od',
-        '......ol',
-        '.....odl',
-        '.....owl',
-        '....odwl',
-        '....owlw',
-        '...odwlw',
-        '...owwlw',
-        '..odwwlw',
-        'SSSSSSSS',
-        'ssssssss',
-        'sssssssm',
-        'ssssssss',
-        '.oSSSSSS',
-        '.odwwwlw',
-        '.odwlwww',
-        '.odwwwlw',
-        '.odwlwww',
-        '.odwwwlw',
-        'SSSSSSSS',
-        'ssssssss',
-        'sssssssm',
-        'ssssssss',
-        '.oSSSSSS',
-        '.odwwwlw',
-        '.odwlwww',
-        '.odwwwlw',
-        '..odwwww',
-        '..odllll',
-        '..odwwww',
-        '...odddd',
-        '....oooo'
-    ];
-    const rows = mirrorRows(half);
-    const pc = new PixelCanvas(rows[0].length, rows.length);
-    pc.stamp(rows, {
-        o: Palette.woodDeep,
-        d: Palette.woodDark,
-        w: Palette.wood,
-        l: Palette.woodLight,
-        s: Palette.sail,
-        S: Palette.sailShade,
-        m: Palette.woodDeep
-    });
-    // Red pirate pennant on the bowsprit tip.
-    pc.px(7, 0, Palette.flagRed).px(7, 1, Palette.flagRed);
-    pc.toTexture(scene, TextureKeys.Sloop);
-};
+
+const makeSpeck = (scene: Scene): void =>
+    textureFromRows(scene, TextureKeys.Speck, ['##'], { '#': Palette.foamWhite });
 
 /** Organic island blob: shallows ring, foam, beach, grass, a few rocks. */
 const makeIsland = (scene: Scene): void => {
@@ -199,8 +153,7 @@ const makeCloud = (scene: Scene): void => {
 };
 
 /** Wooden plank button in three states. */
-const makeButton = (scene: Scene, key: string, fill: number, top: number, bottom: number): void => {
-    const W = 104;
+export const makeButton = (scene: Scene, key: string, fill: number, top: number, bottom: number, W = 104): void => {
     const H = 26;
     const pc = new PixelCanvas(W, H);
     pc.rect(1, 0, W - 2, H, Palette.woodDeep).rect(0, 1, W, H - 2, Palette.woodDeep);
@@ -221,7 +174,10 @@ export const generateTextures = (scene: Scene): void => {
     makeOceanTile(scene);
     makeWave(scene);
     makeSparkle(scene);
-    makeSloop(scene);
+    makeSpeck(scene);
+    generateShipTextures(scene);
+    generateItemTextures(scene);
+    generatePortTextures(scene);
     makeIsland(scene);
     makePalm(scene);
     makeDock(scene);

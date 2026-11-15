@@ -51,8 +51,10 @@ export class HudScene extends Scene {
         this.add.image(mx - 4, my - 4, hudPanel(this, mm + 8, mm + 8)).setOrigin(0);
         this.add.image(mx, my, 'minimap').setOrigin(0);
         const scale = mm / world.size;
-        const port = world.port.dockEnd;
-        this.add.rectangle(mx + port.x * scale, my + port.y * scale, 3, 3, Palette.gold).setStrokeStyle(1, Palette.woodDeep);
+        for (const port of world.ports) {
+            const p = port.dockEnd;
+            this.add.rectangle(mx + p.x * scale, my + p.y * scale, 3, 3, Palette.gold).setStrokeStyle(1, Palette.woodDeep);
+        }
         this.mapDot = this.add.rectangle(mx, my, 3, 3, Palette.flagRed).setStrokeStyle(1, Palette.foamWhite);
         pixelText(this, mx + mm / 2, my + mm + 9, 'CHART', Fonts.Cream).setAlpha(0.8);
 
@@ -65,7 +67,7 @@ export class HudScene extends Scene {
         // --- Toast (top-centre) & prompt (bottom-centre)
         this.toastText = pixelText(this, GAME_WIDTH / 2, 84, '', Fonts.Gold, 2).setAlpha(0);
         this.promptText = pixelText(this, 0, 0, '', Fonts.Cream);
-        const promptBg = this.add.image(0, 0, hudPanel(this, 200, 16));
+        const promptBg = this.add.image(0, 0, hudPanel(this, 236, 16));
         this.promptGroup = this.add.container(GAME_WIDTH / 2, GAME_HEIGHT - 52, [promptBg, this.promptText]).setVisible(false);
 
         // --- Wire up state
@@ -81,6 +83,7 @@ export class HudScene extends Scene {
             state.off(StateEvents.Prompt, onPrompt);
         });
         this.refresh();
+        this.showPrompt(state.currentPrompt);
     }
 
     private refresh(): void {

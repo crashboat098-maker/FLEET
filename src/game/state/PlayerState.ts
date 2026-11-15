@@ -36,8 +36,12 @@ export class PlayerState extends Events.EventEmitter {
         this.emit(StateEvents.Toast, message);
     }
 
-    /** Contextual prompt (e.g. "E - DOCK"). Pass null to clear. */
+    /** The prompt currently on offer, so late-starting UI can show it. */
+    currentPrompt: string | null = null;
+
+    /** Contextual prompt (e.g. "PRESS E TO DOCK"). Pass null to clear. */
     prompt(message: string | null): void {
+        this.currentPrompt = message;
         this.emit(StateEvents.Prompt, message);
     }
 }

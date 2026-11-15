@@ -60,7 +60,10 @@ export class Blob {
     }
 }
 
-export type IslandSize = 'small' | 'medium' | 'large';
+export type IslandSize = 'tiny' | 'small' | 'medium' | 'large' | 'huge';
+
+/** Visual / thematic island type. Each kind has its own terrain and landmarks. */
+export type IslandKind = 'tropical' | 'basic' | 'jungle' | 'volcanic' | 'skull';
 
 export class Island {
     /** Bounding circle (land only). */
@@ -73,7 +76,8 @@ export class Island {
         readonly y: number,
         readonly size: IslandSize,
         readonly blobs: Blob[],
-        readonly seed: number
+        readonly seed: number,
+        readonly kind: IslandKind = 'tropical'
     ) {
         let r = 0;
         for (const b of blobs) r = Math.max(r, Math.hypot(b.x - x, b.y - y) + b.maxRadius);

@@ -24,7 +24,7 @@ export class CollisionWorld {
             const y1 = this.clampCell(island.y + r);
             for (let cy = y0; cy <= y1; cy++) for (let cx = x0; cx <= x1; cx++) this.grid[cy * this.cols + cx].push(island);
         }
-        this.rects = [world.port.dockRect];
+        this.rects = world.ports.map((p) => p.dockRect);
     }
 
     private clampCell(v: number): number {

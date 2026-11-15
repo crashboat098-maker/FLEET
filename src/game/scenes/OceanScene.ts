@@ -1,14 +1,15 @@
-import { Input, Scene } from 'phaser';
+import { Geom, Input, Scene } from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH, PIXEL_SCALE, SceneKeys } from '../config/constants';
 import { Fonts, pixelText } from '../gfx/pixelFont';
 import { CollectibleSystem } from '../entities/CollectibleSystem';
 import { PlayerShip } from '../entities/PlayerShip';
 import { PlayerState } from '../state/PlayerState';
 import { CollisionWorld } from '../world/CollisionWorld';
-import { IslandDecor } from '../world/IslandDecor';
 import { OceanLayer } from '../world/OceanLayer';
 import { PortSystem } from '../world/PortSystem';
-import { bakeDeepWater, bakeIsland, bakeMinimap, bakeReefs } from '../world/terrainTextures';
+import { IslandLife } from '../world/IslandLife';
+import { bakeDeepWater, bakeMinimap, bakeReefs } from '../world/terrainTextures';
+import { TerrainStreamer } from '../world/TerrainStreamer';
 import { generateWorld, WorldData } from '../world/WorldGenerator';
 import { Depth } from '../world/worldConfig';
 import type { HudSceneData } from './HudScene';
@@ -18,7 +19,8 @@ import type { PortSceneData } from './PortScene';
 let cachedWorld: WorldData | null = null;
 const getWorld = (): WorldData => (cachedWorld ??= generateWorld());
 
-const COLLECTIBLE_COUNT = 64;
+// Scaled with the 4x larger ocean so treasure density stays about the same.
+const COLLECTIBLE_COUNT = 220;
 const DISCOVER_RANGE = 150;
 
 /**
@@ -29,8 +31,10 @@ export class OceanScene extends Scene {
     private world!: WorldData;
     private collision!: CollisionWorld;
     private ocean!: OceanLayer;
-    private decor!: IslandDecor;
-    private port!: PortSystem;
+    private life!: IslandLife;
+    private terrain!: TerrainStreamer;
+    private ports: PortSystem[] = [];
+    private dockPort: PortSystem | null = null;
     private ship!: PlayerShip;
     private collectibles!: CollectibleSystem;
     private state!: PlayerState;
@@ -81,23 +85,23 @@ export class OceanScene extends Scene {
         const reefKeys = bakeReefs(this);
         for (const r of world.reefs) this.add.image(r.x, r.y, reefKeys[r.variant]).setScale(PIXEL_SCALE).setDepth(Depth.Seabed);
 
-        this.decor = new IslandDecor(this);
-        const portExclusions = PortSystem.exclusions(world.port);
-        for (const island of world.islands) {
-            const vis = bakeIsland(this, island, island === world.port.island ? portExclusions : []);
-            this.add.image(vis.left, vis.top, vis.key).setOrigin(0).setScale(PIXEL_SCALE).setDepth(Depth.Island);
-            vis.palms.forEach((p) => this.decor.addPalm(p.x, p.y));
-        }
-        this.port = new PortSystem(this, world.port);
+        // Islands stream in tile by tile around the camera.
+        const exclusions = new Map(world.ports.map((p) => [p.island.id, PortSystem.exclusions(p)]));
+        this.life = new IslandLife(this);
+        this.terrain = new TerrainStreamer(this, world.islands, exclusions, this.life);
+        this.ports = world.ports.map((p) => new PortSystem(this, p));
+        this.dockPort = null;
+        const home = world.ports[0];
+        const spawn = home.spawn;
+        this.terrain.primeAround(new Geom.Rectangle(spawn.x - GAME_WIDTH / 2, spawn.y - GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT));
         const tMap = performance.now();
         bakeMinimap(this, world, this.collision);
         const tEnd = performance.now();
 
         // --- Player
         this.state = new PlayerState();
-        const spawn = world.port.spawn;
         this.ship = new PlayerShip(this, this.collision, world.size, spawn.x, spawn.y, spawn.heading);
-        this.discovered.add(world.port.island.id);
+        this.discovered.add(home.island.id);
 
         this.collectibles = new CollectibleSystem(this, this.collision, this.state, world.size, COLLECTIBLE_COUNT, spawn);
 
@@ -118,6 +122,7 @@ export class OceanScene extends Scene {
         this.events.on('resume', () => this.onLeavePort());
         this.events.once('shutdown', () => {
             this.events.off('resume');
+            this.terrain.destroy();
             this.scene.stop(SceneKeys.Hud);
         });
 
@@ -125,10 +130,10 @@ export class OceanScene extends Scene {
             console.info(
                 `[FLEET.IO] world ready in ${Math.round(performance.now() - t0)}ms ` +
                     `(gen ${Math.round(tDeep - t0)}, deep ${Math.round(tIslands - tDeep)}, islands ${Math.round(tMap - tIslands)}, map ${Math.round(tEnd - tMap)}) — ` +
-                    `${world.islands.length} islands, ${this.decor.count} palms, ${world.reefs.length} reefs`
+                    `${world.islands.length} islands, ${world.ports.length} ports, ${this.terrain.loadedTiles} tiles, ${world.reefs.length} reefs`
             );
             // Handy for manual testing in the console.
-            (window as unknown as { fleet: unknown }).fleet = { scene: this, ship: this.ship, state: this.state, world, bakeIsland };
+            (window as unknown as { fleet: unknown }).fleet = { scene: this, ship: this.ship, state: this.state, world };
         }
     }
 
@@ -144,8 +149,9 @@ export class OceanScene extends Scene {
         cam.setFollowOffset(this.lookAhead.x, this.lookAhead.y);
 
         this.ocean.update(delta);
-        this.decor.update(delta);
-        this.port.update(delta);
+        this.terrain.update(delta);
+        this.life.update(delta);
+        for (const p of this.ports) p.update(delta);
         this.collectibles.update(delta, this.ship);
 
         this.updateDocking(delta);
@@ -154,12 +160,15 @@ export class OceanScene extends Scene {
 
     private updateDocking(delta: number): void {
         this.dockCooldown = Math.max(0, this.dockCooldown - delta);
-        const can = this.port.canDock(this.ship.x, this.ship.y);
-        if (can !== this.canDockNow) {
+        // Invisible docking radius around each dock head; never drawn.
+        const port = this.ports.find((p) => p.canDock(this.ship.x, this.ship.y)) ?? null;
+        const can = port !== null;
+        if (can !== this.canDockNow || port !== this.dockPort) {
             this.canDockNow = can;
-            this.state.prompt(can ? `E - DOCK AT ${this.world.port.name}` : null);
+            this.dockPort = port;
+            this.state.prompt(port ? `PRESS E TO DOCK - ${port.layout.name}` : null);
         }
-        if (can && this.dockCooldown === 0 && Input.Keyboard.JustDown(this.keyDock)) this.dock();
+        if (port && this.dockCooldown === 0 && Input.Keyboard.JustDown(this.keyDock)) this.dock(port);
     }
 
     private updateDiscovery(delta: number): void {
@@ -175,12 +184,13 @@ export class OceanScene extends Scene {
         }
     }
 
-    private dock(): void {
+    private dock(port: PortSystem): void {
         this.ship.stop();
         this.ship.controlsEnabled = false;
         this.state.prompt(null);
         this.canDockNow = false;
-        const data: PortSceneData = { state: this.state, portName: this.world.port.name };
+        this.dockPort = null;
+        const data: PortSceneData = { state: this.state, portName: port.layout.name };
         this.scene.launch(SceneKeys.Port, data);
         this.scene.pause();
     }

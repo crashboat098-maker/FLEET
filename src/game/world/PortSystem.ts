@@ -2,17 +2,18 @@ import { GameObjects, Scene } from 'phaser';
 import { PIXEL_SCALE } from '../config/constants';
 import { Fonts, pixelText } from '../gfx/pixelFont';
 import { makeDockTexture, PortTextures } from '../gfx/portTextures';
-import { Circle, PortLayout } from './WorldGenerator';
-import { Depth } from './worldConfig';
+import { CARDINAL_VEC, Circle, PortLayout } from './WorldGenerator';
+import { Depth, DOCK_RADIUS } from './worldConfig';
 
-/** How close (world units) the ship must be to the dock to dock. */
-export const DOCK_RANGE = 70;
+/** Rotation that turns the (south-pointing) dock texture to face each direction. */
+const DOCK_ANGLE = { S: 0, N: 180, E: -90, W: 90 } as const;
 
 /**
- * Builds the harbour's visuals and answers "can the ship dock here?".
+ * Builds one harbour's visuals and answers "is the ship inside this port's
+ * docking radius?". The radius itself is never drawn.
  */
 export class PortSystem {
-    private readonly beam: GameObjects.Image;
+    private readonly beam: GameObjects.Image | null = null;
     private readonly bobbers: { obj: GameObjects.Image; baseY: number; phase: number }[] = [];
     private readonly marker: GameObjects.Image;
     private readonly markerBaseY: number;
@@ -20,11 +21,17 @@ export class PortSystem {
 
     constructor(private readonly scene: Scene, readonly layout: PortLayout) {
         const S = PIXEL_SCALE;
-        const { dockBase, dockEnd, dockWidth } = layout;
+        const { dockBase, dockEnd, dockWidth, dir } = layout;
+        const f = CARDINAL_VEC[dir];
 
-        const dockKey = 'dock-harbour';
-        makeDockTexture(scene, dockKey, dockWidth / S, (dockEnd.y - dockBase.y) / S);
-        scene.add.image(dockBase.x, dockBase.y, dockKey).setOrigin(0.5, 0).setScale(S).setDepth(Depth.IslandDecor);
+        const length = Math.hypot(dockEnd.x - dockBase.x, dockEnd.y - dockBase.y);
+        const dockKey = `dock-${Math.round(length)}`;
+        makeDockTexture(scene, dockKey, dockWidth / S, length / S);
+        scene.add
+            .image((dockBase.x + dockEnd.x) / 2, (dockBase.y + dockEnd.y) / 2, dockKey)
+            .setScale(S)
+            .setAngle(DOCK_ANGLE[dir])
+            .setDepth(Depth.IslandDecor);
 
         for (const b of layout.buildings) {
             scene.add.image(b.x, b.y, PortTextures.Roof[b.variant]).setScale(S).setDepth(Depth.IslandDecor + 1);
@@ -34,12 +41,14 @@ export class PortSystem {
             scene.add.image(p.x, p.y, key).setScale(S).setDepth(Depth.IslandDecor + 2);
         }
 
-        scene.add.image(layout.lighthouse.x, layout.lighthouse.y, PortTextures.Lighthouse).setScale(S).setDepth(Depth.Canopy);
-        this.beam = scene.add
-            .image(layout.lighthouse.x, layout.lighthouse.y, PortTextures.Beam)
-            .setOrigin(0, 0.5)
-            .setScale(S)
-            .setDepth(Depth.Canopy + 1);
+        if (layout.lighthouse) {
+            scene.add.image(layout.lighthouse.x, layout.lighthouse.y, PortTextures.Lighthouse).setScale(S).setDepth(Depth.Canopy);
+            this.beam = scene.add
+                .image(layout.lighthouse.x, layout.lighthouse.y, PortTextures.Beam)
+                .setOrigin(0, 0.5)
+                .setScale(S)
+                .setDepth(Depth.Canopy + 1);
+        }
 
         for (const buoy of layout.buoys) {
             const key = buoy.color === 'red' ? PortTextures.BuoyRed : PortTextures.BuoyGreen;
@@ -48,30 +57,32 @@ export class PortSystem {
         }
 
         // Harbour marker: a gold anchor hovering over the dock head.
-        this.markerBaseY = dockEnd.y - 30;
-        this.marker = scene.add.image(dockEnd.x, this.markerBaseY, PortTextures.Anchor).setScale(S).setDepth(Depth.WorldLabel);
-        pixelText(scene, dockBase.x, dockBase.y - 168, layout.name, Fonts.Gold, 1).setDepth(Depth.WorldLabel);
+        const mx = dockEnd.x - f.x * 30;
+        this.markerBaseY = dockEnd.y - f.y * 30;
+        this.marker = scene.add.image(mx, this.markerBaseY, PortTextures.Anchor).setScale(S).setDepth(Depth.WorldLabel);
+        pixelText(scene, layout.label.x, layout.label.y, layout.name, Fonts.Gold, 1).setDepth(Depth.WorldLabel);
     }
 
     /** Areas on the port island that vegetation should avoid. */
     static exclusions(layout: PortLayout): Circle[] {
-        return [
+        const list: Circle[] = [
             ...layout.buildings.map((b) => ({ x: b.x, y: b.y, r: 36 })),
             ...layout.props.map((p) => ({ x: p.x, y: p.y, r: 14 })),
-            { x: layout.lighthouse.x, y: layout.lighthouse.y, r: 26 },
-            { x: layout.dockBase.x, y: layout.dockBase.y, r: 40 }
+            { x: layout.dockBase.x, y: layout.dockBase.y, r: 40 },
+            { x: layout.label.x, y: layout.label.y, r: 30 }
         ];
+        if (layout.lighthouse) list.push({ x: layout.lighthouse.x, y: layout.lighthouse.y, r: 26 });
+        return list;
     }
 
-    /** Distance from a point to the dock (segment from base to end). */
+    /** Distance from a point to the centre of the docking radius (the dock head). */
     distanceToDock(x: number, y: number): number {
-        const { dockBase, dockEnd } = this.layout;
-        const cy = Math.max(dockBase.y + 40, Math.min(dockEnd.y, y));
-        return Math.hypot(x - dockBase.x, y - cy);
+        return Math.hypot(x - this.layout.dockEnd.x, y - this.layout.dockEnd.y);
     }
 
+    /** Inside the invisible docking radius? */
     canDock(x: number, y: number): boolean {
-        return this.distanceToDock(x, y) < DOCK_RANGE;
+        return this.distanceToDock(x, y) <= DOCK_RADIUS;
     }
 
     update(deltaMs: number): void {
@@ -82,7 +93,7 @@ export class PortSystem {
         if (Math.abs(dockEnd.x - view.centerX) > view.width + 300 || Math.abs(dockEnd.y - view.centerY) > view.height + 300) return;
 
         const t = this.elapsed / 1000;
-        this.beam.rotation = t * 0.9;
+        if (this.beam) this.beam.rotation = t * 0.9;
         for (const b of this.bobbers) b.obj.y = b.baseY + Math.round(Math.sin(t * 2 + b.phase) * 1.5);
         this.marker.y = this.markerBaseY + Math.round(Math.sin(t * 2.5) * 3);
     }

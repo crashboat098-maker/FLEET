@@ -59,6 +59,37 @@ export class IslandLife {
                     living.glows.push({ img, phase: Math.random() * 6, base: fx.kind === 'eyeGlow' ? 0.75 : 0.6 });
                     break;
                 }
+                case 'steam': {
+                    const em = scene.add.particles(fx.x, fx.y, 'fx-steam', {
+                        x: { min: -14, max: 14 },
+                        y: { min: -8, max: 8 },
+                        lifespan: { min: 1200, max: 2000 },
+                        frequency: 150,
+                        speedX: { min: -4, max: 8 },
+                        speedY: { min: -20, max: -10 },
+                        scale: { start: S * 0.6, end: S * 1.8 },
+                        alpha: { start: 0.55, end: 0 }
+                    });
+                    em.setDepth(Depth.Smoke);
+                    living.emitters.push(em);
+                    break;
+                }
+                case 'embers': {
+                    // `scale` carries the crater radius for embers.
+                    const em = scene.add.particles(fx.x, fx.y, 'fx-ember', {
+                        x: { min: -k * 0.8, max: k * 0.8 },
+                        y: { min: -k * 0.8, max: k * 0.8 },
+                        lifespan: { min: 900, max: 1800 },
+                        frequency: 70,
+                        speedX: { min: -12, max: 12 },
+                        speedY: { min: -40, max: -18 },
+                        scale: S,
+                        alpha: { start: 1, end: 0 }
+                    });
+                    em.setDepth(Depth.Smoke + 1);
+                    living.emitters.push(em);
+                    break;
+                }
                 case 'smoke': {
                     const em = scene.add.particles(fx.x, fx.y, FxTextures.Smoke, {
                         lifespan: { min: 2600, max: 4200 },

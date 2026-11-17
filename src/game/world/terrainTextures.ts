@@ -5,6 +5,7 @@ import { Raster } from '../gfx/Raster';
 import { CollisionWorld } from './CollisionWorld';
 import { bayer, valueNoise } from './noise';
 import { WorldData } from './WorldGenerator';
+import { REGIONS, regionAt } from './regions';
 
 /**
  * World-wide baked textures: open-ocean reefs, the deep-water overlay and
@@ -105,7 +106,7 @@ const CHART_LAND: Record<string, number> = {
 /** Small overview map for the HUD. */
 export const MINIMAP_SIZE = 88;
 export const bakeMinimap = (scene: Scene, world: WorldData, collision: CollisionWorld): string => {
-    const key = 'minimap';
+    const key = 'minimap-v2';
     if (scene.textures.exists(key)) return key;
     const N = MINIMAP_SIZE;
     const step = world.size / N;
@@ -114,7 +115,8 @@ export const bakeMinimap = (scene: Scene, world: WorldData, collision: Collision
         for (let x = 0; x < N; x++) {
             const wx = (x + 0.5) * step;
             const wy = (y + 0.5) * step;
-            let c: number = Palette.seaMid;
+            // Water is coloured by region so the chart shows where each region lies.
+            let c: number = REGIONS[regionAt(wx, wy)].chart;
             let best = 1e6;
             let kind = 'tropical';
             for (const isl of collision.islandsNear(wx, wy)) {
@@ -127,7 +129,6 @@ export const bakeMinimap = (scene: Scene, world: WorldData, collision: Collision
             if (best < -45) c = CHART_LAND[kind];
             else if (best < 0) c = kind === 'volcanic' ? 0x3b3a44 : Palette.sand;
             else if (best < 70) c = Palette.lagoon;
-            else if (world.deepPatches.some((p) => Math.hypot(p.x - wx, p.y - wy) < p.r * 0.7)) c = Palette.sea;
             r.set(x, y, c);
         }
     }

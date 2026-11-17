@@ -1,38 +1,11 @@
 import { Input, Scene } from 'phaser';
-import { ShipSprite } from '../gfx/ShipSprite';
+import { SPEED_CAP } from '../config/constants';
+import { Combatant, Faction, newUid } from '../combat/Combatant';
+import { ShipClassId, ShipStats, TAILWIND } from '../ships/shipClasses';
+import type { DamageSource } from '../state/PlayerState';
 import { CollisionWorld } from '../world/CollisionWorld';
-import { Depth, WORLD_EDGE_MARGIN } from '../world/worldConfig';
-
-/**
- * Starter sloop handling — deliberately slow and basic so that future sail
- * and rudder upgrades feel rewarding. Gentle acceleration, long glide,
- * lazy rudder.
- */
-export const SLOOP_HANDLING = {
-    maxSpeed: 84, // world units / s (~60% slower than the original 210)
-    reverseMax: 22,
-    accel: 34, // ~2.5s to full sail
-    brake: 60,
-    coastDrag: 0.35, // exponential decay per second with no throttle
-    keelGrip: 3.0, // how quickly sideways drift is cancelled
-    turnRate: 1.0, // rad/s at speed
-    turnAtRest: 0.45, // fraction of turnRate available when stopped
-    turnResponse: 2.5 // how quickly the rudder reaches its target
-};
-
-/** Hull collision probes in local space (+y = toward stern). */
-const HULL_PROBES: readonly [number, number][] = [
-    [0, -29],
-    [-6, -19],
-    [6, -19],
-    [-11, -4],
-    [11, -4],
-    [-11, 12],
-    [11, 12],
-    [-8, 25],
-    [8, 25],
-    [0, 29]
-];
+import { Depth } from '../world/worldConfig';
+import { ShipBody } from './ShipBody';
 
 interface Controls {
     up: Input.Keyboard.Key[];
@@ -41,152 +14,168 @@ interface Controls {
     right: Input.Keyboard.Key[];
 }
 
-export class PlayerShip {
-    readonly sprite: ShipSprite;
-    x: number;
-    y: number;
-    heading: number;
-    vx = 0;
-    vy = 0;
-    private angVel = 0;
-    private controls: Controls;
-    /** When false, input is ignored (e.g. while docked). */
+const wrapAngle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
+
+/**
+ * The player's flagship: keyboard + mouse steering, Tailwind, broadside
+ * reload timers, and the Combatant interface (damage is routed to the
+ * persistent PlayerState through `onHit`).
+ */
+export class PlayerShip extends ShipBody implements Combatant {
+    readonly uid = newUid();
+    readonly faction: Faction = 'player';
+    readonly kind = 'ship' as const;
+    readonly role = 'flagship';
+    name = 'FLAGSHIP';
+    private readonly controls: Controls;
+    /** When false, input is ignored (docked, sinking...). */
     controlsEnabled = true;
-    private readonly probeBuf = HULL_PROBES.map(() => ({ x: 0, y: 0 }));
+    /** Mouse destination, or null when steering by keyboard. */
+    target: { x: number; y: number } | null = null;
+    /** A siren's pull on the helm (set each frame by the mermaid system). */
+    lure: { x: number; y: number; strength: number } | null = null;
+    private tailwindUntil = 0;
+    private tailwindReadyAt = 0;
+    private clock = 0;
+    /** Broadside reload: ms timestamps when each side is ready (port = -1, starboard = 1). */
+    private reloadReady = { port: 0, starboard: 0 };
+    /** Called with the speed lost in a collision with land or a dock. */
+    onImpact: ((impactSpeed: number) => void) | null = null;
+    /** Damage from cannonballs, rams, creatures (wired to PlayerState). */
+    onHit: ((damage: number, source: DamageSource, from: Combatant | null) => void) | null = null;
+    /** Live HP ratio and alive flag provided by the scene. */
+    status: () => { alive: boolean; hpRatio: number } = () => ({ alive: true, hpRatio: 1 });
 
     constructor(
         scene: Scene,
-        private readonly collision: CollisionWorld,
-        private readonly worldSize: number,
+        collision: CollisionWorld,
+        worldSize: number,
         x: number,
         y: number,
-        heading: number
+        heading: number,
+        cls: ShipClassId,
+        private readonly getStats: () => ShipStats
     ) {
-        this.x = x;
-        this.y = y;
-        this.heading = heading;
-        this.sprite = new ShipSprite(scene, x, y, heading, { wakeDepth: Depth.Wake }).setDepth(Depth.Ship);
-
+        super(scene, collision, worldSize, x, y, heading, cls, { wakeDepth: Depth.Wake });
+        this.sprite.setDepth(Depth.Ship);
         const kb = scene.input.keyboard!;
         const K = Input.Keyboard.KeyCodes;
-        const key = (code: number) => kb.addKey(code);
+        const key = (code: number) => kb.addKey(code, false);
         this.controls = {
             up: [key(K.W), key(K.UP)],
             down: [key(K.S), key(K.DOWN)],
             left: [key(K.A), key(K.LEFT)],
             right: [key(K.D), key(K.RIGHT)]
         };
-        this.unstick();
     }
 
-    get speed(): number {
-        return Math.hypot(this.vx, this.vy);
+    // ------------------------------------------------------------ combatant
+
+    get alive(): boolean {
+        return this.status().alive;
+    }
+    get hpRatio(): number {
+        return this.status().hpRatio;
+    }
+    get creatureMult(): number {
+        return this.getStats().creatureMult;
+    }
+    takeHit(damage: number, source: DamageSource, from: Combatant | null): void {
+        this.onHit?.(damage, source, from);
     }
 
-    /** Signed speed along the bow direction. */
-    get forwardSpeed(): number {
-        return this.vx * Math.sin(this.heading) - this.vy * Math.cos(this.heading);
+    // ------------------------------------------------------------- cannons
+
+    /** ms until a side can fire again. */
+    reloadLeft(side: -1 | 1): number {
+        return Math.max(0, (side < 0 ? this.reloadReady.port : this.reloadReady.starboard) - this.clock);
     }
+
+    /** Start reloading a side; returns false if it isn't ready yet. */
+    tryFire(side: -1 | 1): boolean {
+        if (!this.controlsEnabled || this.reloadLeft(side) > 0) return false;
+        const t = this.clock + this.getStats().reloadMs;
+        if (side < 0) this.reloadReady.port = t;
+        else this.reloadReady.starboard = t;
+        return true;
+    }
+
+    // ------------------------------------------------------------- Tailwind
+
+    get tailwindActive(): boolean {
+        return this.clock < this.tailwindUntil;
+    }
+    get tailwindRemaining(): number {
+        return Math.max(0, (this.tailwindActive ? this.tailwindUntil : this.tailwindReadyAt) - this.clock);
+    }
+    get tailwindReady(): boolean {
+        return this.clock >= this.tailwindReadyAt;
+    }
+    triggerTailwind(): boolean {
+        if (!this.tailwindReady || !this.controlsEnabled) return false;
+        this.tailwindUntil = this.clock + TAILWIND.durationMs;
+        this.tailwindReadyAt = this.clock + TAILWIND.cooldownMs;
+        return true;
+    }
+    /** Current top speed including Tailwind — never above SPEED_CAP. */
+    get topSpeed(): number {
+        const base = this.getStats().maxSpeed;
+        return Math.min(SPEED_CAP, this.tailwindActive ? base * TAILWIND.speedMult : base);
+    }
+
+    // ---------------------------------------------------------------- input
 
     private held(keys: Input.Keyboard.Key[]): boolean {
         return this.controlsEnabled && keys.some((k) => k.isDown);
     }
 
-    private probes(x: number, y: number, heading: number) {
-        const sin = Math.sin(heading);
-        const cos = Math.cos(heading);
-        HULL_PROBES.forEach(([lx, ly], i) => {
-            this.probeBuf[i].x = x + lx * cos - ly * sin;
-            this.probeBuf[i].y = y + lx * sin + ly * cos;
-        });
-        return this.probeBuf;
+    override stop(): void {
+        super.stop();
+        this.target = null;
     }
 
-    private free(x: number, y: number, heading: number): boolean {
-        return this.collision.pointsFree(this.probes(x, y, heading));
-    }
-
-    /** If the hull overlaps land (spawn, rotation edge cases), nudge it back into open water. */
-    private unstick(): void {
-        // Bounded per call; anything left over resolves on the next frame.
-        for (let i = 0; i < 200 && !this.free(this.x, this.y, this.heading); i++) {
-            const dir = this.collision.escapeDirection(this.x, this.y);
-            this.x += dir.x * 4;
-            this.y += dir.y * 4;
-        }
-    }
-
-    stop(): void {
-        this.vx = 0;
-        this.vy = 0;
-        this.angVel = 0;
+    setTarget(x: number, y: number): void {
+        if (this.controlsEnabled) this.target = { x, y };
     }
 
     update(deltaMs: number): void {
-        const H = SLOOP_HANDLING;
-        const dt = Math.min(deltaMs, 50) / 1000;
+        const H = this.getStats();
+        this.clock += deltaMs;
 
-        // --- Steering: rudder eases toward its target rate.
-        const steer = (this.held(this.controls.right) ? 1 : 0) - (this.held(this.controls.left) ? 1 : 0);
-        let fwd = this.forwardSpeed;
-        const speedFactor = Math.min(1, Math.abs(fwd) / H.maxSpeed);
-        const targetTurn = steer * H.turnRate * (H.turnAtRest + (1 - H.turnAtRest) * speedFactor);
-        this.angVel += (targetTurn - this.angVel) * Math.min(1, H.turnResponse * dt);
-        const newHeading = this.heading + this.angVel * dt;
-        if (this.free(this.x, this.y, newHeading)) this.heading = newHeading;
-        else this.angVel = 0;
+        // Keyboard overrides (and cancels) the mouse destination.
+        const kSteer = (this.held(this.controls.right) ? 1 : 0) - (this.held(this.controls.left) ? 1 : 0);
+        const kUp = this.held(this.controls.up);
+        const kDown = this.held(this.controls.down);
+        if (kSteer || kUp || kDown || !this.controlsEnabled) this.target = null;
 
-        // --- Throttle along the bow; the keel bleeds off sideways drift.
-        const sin = Math.sin(this.heading);
-        const cos = Math.cos(this.heading);
-        let lat = this.vx * cos + this.vy * sin;
-        fwd = this.vx * sin - this.vy * cos;
-
-        const throttle = this.held(this.controls.up);
-        const reverse = this.held(this.controls.down);
-        if (throttle) fwd = Math.min(H.maxSpeed, fwd + H.accel * dt);
-        else if (reverse) fwd = fwd > 0 ? Math.max(0, fwd - H.brake * dt) : Math.max(-H.reverseMax, fwd - H.accel * 0.4 * dt);
-        else fwd *= Math.exp(-H.coastDrag * dt);
-        if (Math.abs(fwd) < 0.5 && !throttle && !reverse) fwd = 0;
-        lat *= Math.exp(-H.keelGrip * dt);
-
-        this.vx = fwd * sin + lat * cos;
-        this.vy = -fwd * cos + lat * sin;
-
-        // --- Move with sliding collision response.
-        const nx = this.x + this.vx * dt;
-        const ny = this.y + this.vy * dt;
-        if (this.free(nx, ny, this.heading)) {
-            this.x = nx;
-            this.y = ny;
-        } else if (this.free(nx, this.y, this.heading)) {
-            this.x = nx;
-            this.vy *= 0.3;
-            this.vx *= 0.85;
-        } else if (this.free(this.x, ny, this.heading)) {
-            this.y = ny;
-            this.vx *= 0.3;
-            this.vy *= 0.85;
-        } else {
-            // Head-on: small bounce back.
-            this.vx *= -0.2;
-            this.vy *= -0.2;
-        }
-        this.unstick();
-
-        // --- World edge.
-        const m = WORLD_EDGE_MARGIN;
-        const max = this.worldSize - m;
-        if (this.x < m || this.x > max) {
-            this.x = Math.max(m, Math.min(max, this.x));
-            this.vx = 0;
-        }
-        if (this.y < m || this.y > max) {
-            this.y = Math.max(m, Math.min(max, this.y));
-            this.vy = 0;
+        let steer = kSteer;
+        let throttle = kUp ? 1 : 0;
+        let reverse = kDown;
+        if (this.target) {
+            const dx = this.target.x - this.x;
+            const dy = this.target.y - this.y;
+            const dist = Math.hypot(dx, dy);
+            const diff = wrapAngle(Math.atan2(dx, -dy) - this.heading);
+            const fwd = Math.max(0, this.forwardSpeed);
+            const stopDist = (fwd * fwd) / (2 * Math.max(1, H.brake)) + this.halfLen * 0.5;
+            if (dist < this.halfLen * 0.6 + 12) {
+                this.target = null;
+            } else {
+                steer = Math.max(-1, Math.min(1, diff * 2.2));
+                throttle = dist <= stopDist ? 0 : Math.abs(diff) < 0.9 ? 1 : Math.abs(diff) < 2 ? 0.4 : 0.15;
+                reverse = false;
+            }
         }
 
-        this.sprite.setPosition(this.x, this.y).setRotation(this.heading);
-        this.sprite.setSailing(Math.max(0, this.forwardSpeed) / H.maxSpeed);
+        // Siren song: the helm drifts toward her rocks. Counter-steering fights it.
+        if (this.lure && this.controlsEnabled) {
+            const pull = wrapAngle(Math.atan2(this.lure.x - this.x, -(this.lure.y - this.y)) - this.heading);
+            steer = Math.max(-1, Math.min(1, steer + Math.max(-1, Math.min(1, pull * 1.5)) * this.lure.strength));
+            throttle = Math.max(throttle, 0.35 * this.lure.strength);
+        }
+
+        const accel = H.accel * (this.tailwindActive ? TAILWIND.accelMult : 1);
+        const lost = this.drive(deltaMs, H, steer, throttle, reverse, this.topSpeed, accel);
+        if (lost > 0.5 && this.onImpact) this.onImpact(lost);
     }
 }

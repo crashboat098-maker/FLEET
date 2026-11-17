@@ -7,7 +7,7 @@ import { PixelCanvas } from './pixelCanvas';
  * Colour variants are baked separately so no runtime tinting is needed.
  */
 
-const GLYPHS: Record<string, string[]> = {
+export const GLYPHS: Record<string, string[]> = {
     A: ['.###.', '#...#', '#...#', '#####', '#...#', '#...#', '#...#'],
     B: ['####.', '#...#', '#...#', '####.', '#...#', '#...#', '####.'],
     C: ['.###.', '#...#', '#....', '#....', '#....', '#...#', '.###.'],
@@ -58,7 +58,11 @@ const GLYPHS: Record<string, string[]> = {
     '&': ['.##..', '#..#.', '#.#..', '.#...', '#.#.#', '#..#.', '.##.#'],
     '+': ['.....', '..#..', '..#..', '#####', '..#..', '..#..', '.....'],
     '>': ['.#...', '..#..', '...#.', '....#', '...#.', '..#..', '.#...'],
-    '<': ['...#.', '..#..', '.#...', '#....', '.#...', '..#..', '...#.']
+    '<': ['...#.', '..#..', '.#...', '#....', '.#...', '..#..', '...#.'],
+    '%': ['##..#', '##.#.', '...#.', '..#..', '.#...', '.#.##', '#..##'],
+    '_': ['.....', '.....', '.....', '.....', '.....', '.....', '#####'],
+    '=': ['.....', '.....', '#####', '.....', '#####', '.....', '.....'],
+    '*': ['.....', '#.#.#', '.###.', '#####', '.###.', '#.#.#', '.....']
 };
 
 const CHARS = Object.keys(GLYPHS).join('');
@@ -78,6 +82,8 @@ export const Fonts = {
     Cream: 'font-cream',
     Gold: 'font-gold',
     Ink: 'font-ink',
+    Green: 'font-green',
+    Red: 'font-red',
     Title: 'font-title',
     TitleShadow: 'font-title-shadow'
 } as const;
@@ -88,6 +94,8 @@ const STYLES: Record<FontKey, FontStyle> = {
     [Fonts.Cream]: { fill: Palette.cream, shadow: Palette.ink },
     [Fonts.Gold]: { fill: Palette.gold, shadow: Palette.woodDeep },
     [Fonts.Ink]: { fill: Palette.woodDeep },
+    [Fonts.Green]: { fill: 0x8fe07a, shadow: Palette.ink },
+    [Fonts.Red]: { fill: 0xff7a6a, shadow: Palette.ink },
     [Fonts.Title]: { fill: Palette.gold, outline: Palette.woodDeep },
     [Fonts.TitleShadow]: { fill: Palette.shadow, outline: Palette.shadow }
 };

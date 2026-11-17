@@ -78,6 +78,11 @@ export class OceanLayer {
         t.vy = PMath.FloatBetween(-drift, drift) * 0.3;
     }
 
+    /** Multiplicative colour for the sea surface (regional water). */
+    setTint(color: number): void {
+        this.water.setTint(color);
+    }
+
     update(deltaMs: number): void {
         this.elapsed += deltaMs;
         const cam = this.scene.cameras.main;

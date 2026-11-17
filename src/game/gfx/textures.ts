@@ -1,7 +1,9 @@
 import { Scene } from 'phaser';
 import { Palette } from '../config/palette';
 import { createRng, PixelCanvas, textureFromRows } from './pixelCanvas';
+import { generateCombatTextures } from './combatTextures';
 import { generateFxTextures } from './fxTextures';
+import { generateWorldTextures } from './worldTextures';
 import { generateItemTextures } from './itemTextures';
 import { generatePortTextures } from './portTextures';
 import { generateShipTextures } from './shipTextures';
@@ -180,6 +182,8 @@ export const generateTextures = (scene: Scene): void => {
     generateItemTextures(scene);
     generatePortTextures(scene);
     generateFxTextures(scene);
+    generateCombatTextures(scene);
+    generateWorldTextures(scene);
     makeIsland(scene);
     makePalm(scene);
     makeDock(scene);

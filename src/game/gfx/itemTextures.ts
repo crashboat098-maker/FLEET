@@ -8,10 +8,19 @@ export const ItemTextures = {
     Crate: 'item-crate',
     Chest: 'item-chest',
     Supplies: 'item-supplies',
-    Ripple: 'item-ripple'
+    Ripple: 'item-ripple',
+    Parcel: 'item-parcel'
 } as const;
 
 export const generateItemTextures = (scene: Scene): void => {
+    // Sealed mission parcel: wrapped bundle with twine and a red wax seal.
+    textureFromRows(scene, ItemTextures.Parcel, ['ooooooooo', 'osstsssso', 'osstsssso', 'otttRtttO', 'osstsssso', 'osstsssso', 'ooooooooo'], {
+        o: Palette.woodDark,
+        O: Palette.woodDark,
+        s: Palette.sandShade,
+        t: Palette.woodLight,
+        R: Palette.flagRed
+    });
     // Barrel floating on its side, iron hoops.
     textureFromRows(
         scene,

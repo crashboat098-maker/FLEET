@@ -4,7 +4,7 @@ import { PixelCanvas, textureFromRows } from './pixelCanvas';
 
 /** Harbour art: roofs, lighthouse, buoys, props and the anchor marker. */
 export const PortTextures = {
-    Roof: ['roof-thatch', 'roof-red', 'roof-teal'],
+    Roof: ['roof-thatch', 'roof-red', 'roof-teal', 'roof-slate', 'roof-pirate'],
     Lighthouse: 'lighthouse',
     Beam: 'lighthouse-beam',
     BuoyRed: 'buoy-red',
@@ -17,7 +17,10 @@ export const PortTextures = {
 const ROOFS: { base: number; shade: number; dark: number }[] = [
     { base: Palette.sand, shade: Palette.sandShade, dark: Palette.wetSand },
     { base: 0xd2493a, shade: 0xa8352a, dark: 0x6e2019 },
-    { base: 0x3f9c95, shade: 0x2e7d7a, dark: 0x1f5755 }
+    { base: 0x3f9c95, shade: 0x2e7d7a, dark: 0x1f5755 },
+    // Naval slate and pirate charred-black roofs.
+    { base: 0x7a8496, shade: 0x5a6476, dark: 0x3a4250 },
+    { base: 0x3a2a30, shade: 0x2a1c22, dark: 0x140c10 }
 ];
 
 /** Top-down gabled roof: lit north slope, shaded south slope, shingle rows. */

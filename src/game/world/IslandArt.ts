@@ -24,7 +24,7 @@ export interface Stamp {
 
 /** Animated sprite effects attached to an island while it is near the camera. */
 export interface FxSpec {
-    kind: 'smoke' | 'lavaGlow' | 'fire' | 'eyeGlow';
+    kind: 'smoke' | 'lavaGlow' | 'fire' | 'eyeGlow' | 'steam' | 'embers';
     x: number;
     y: number;
     scale?: number;
@@ -72,6 +72,8 @@ export class IslandArt {
     readonly stamps: Stamp[] = [];
     readonly palms: { x: number; y: number }[] = [];
     readonly fx: FxSpec[] = [];
+    /** Damaging areas (world units), e.g. boiling water where lava meets the sea. */
+    readonly hazards: Circle[] = [];
 
     private readonly water: WaterStyle;
     private readonly seed: number;
@@ -92,7 +94,8 @@ export class IslandArt {
 
         if (island.kind === 'volcanic') {
             const main = island.blobs[0];
-            this.cone = { x: (main.x - this.left) / S, y: (main.y - this.top) / S, r: (main.maxRadius * 0.5) / S };
+            // The cone dominates the island so the whole volcano fits on screen.
+            this.cone = { x: (main.x - this.left) / S, y: (main.y - this.top) / S, r: (main.maxRadius * 0.62) / S };
         }
         this.plan();
     }
@@ -172,13 +175,18 @@ export class IslandArt {
             const d = Math.sqrt(cdx * cdx + cdy * cdy);
             const t = d / this.cone.r;
             if (t < 1 && e < -6) {
-                if (t < 0.11) return out.set(rx, ry, valueNoise(px / 2, py / 2, seed + 1) > 0.55 ? LAVA_HOT : LAVA);
-                if (t < 0.16) return out.set(rx, ry, t < 0.13 ? LAVA_EDGE : 0x241a20);
-                // Lit from the top-left; alternating rings read as elevation.
+                // Molten crater with a glowing rim and a dark lip.
+                if (t < 0.13) return out.set(rx, ry, valueNoise(px / 2, py / 2, seed + 1) > 0.55 ? LAVA_HOT : LAVA);
+                if (t < 0.155) return out.set(rx, ry, LAVA_EDGE);
+                if (t < 0.19) return out.set(rx, ry, t < 0.17 ? 0x5a3028 : 0x241a20);
+                // Lit from the top-left; strong alternating ridges read as a tall cone.
                 const light = d > 0 ? (-cdx - cdy) / (d * Math.SQRT2) : 0;
-                const ring = Math.floor(t * 8) % 2 ? 0.35 : -0.35;
-                const fade = t > 0.85 ? (t - 0.85) * 6 : 0; // blend into the surrounding ash
-                const idx = Math.round(2 + light * 1.6 + ring + b - 0.5 - fade);
+                const ring = Math.floor(t * 9) % 2 ? 0.5 : -0.5;
+                // Gullies running down the slopes.
+                const gully = valueNoise(Math.atan2(cdy, cdx) * 9, t * 3, seed + 41) > 0.7 ? -0.8 : 0;
+                // Dark outline where the cone meets the island floor.
+                if (t > 0.95 && b < 0.6) return out.set(rx, ry, 0x241a20);
+                const idx = Math.round(2 + light * 1.8 + ring + gully + b - 0.5);
                 return out.set(rx, ry, CONE[Math.max(0, Math.min(4, idx))]);
             }
         }
@@ -324,11 +332,19 @@ export class IslandArt {
         const flows = 3 + Math.floor(rng() * 2);
         for (let i = 0; i < flows; i++) {
             const a = (i / flows) * Math.PI * 2 + rng() * 0.8;
-            this.lavaFlow(rng, cone.x + Math.cos(a) * cone.r * 0.13, cone.y + Math.sin(a) * cone.r * 0.13, a);
+            const mouth = this.lavaFlow(rng, cone.x + Math.cos(a) * cone.r * 0.16, cone.y + Math.sin(a) * cone.r * 0.16, a);
+            // Where lava meets the sea the water boils: steam, and a hazard to ships.
+            const wx = this.worldX(mouth.x);
+            const wy = this.worldY(mouth.y);
+            this.fx.push({ kind: 'steam', x: wx, y: wy });
+            this.hazards.push({ x: wx, y: wy, r: 46 });
         }
-        this.fx.push({ kind: 'lavaGlow', ...craterWorld, scale: Math.max(1, (cone.r * 0.3) / 8) });
-        this.fx.push({ kind: 'smoke', x: craterWorld.x - 6, y: craterWorld.y - 4, scale: 1.4 });
-        this.fx.push({ kind: 'smoke', x: craterWorld.x + 8, y: craterWorld.y + 2, scale: 1 });
+        const craterR = cone.r * 0.13 * S;
+        this.fx.push({ kind: 'lavaGlow', ...craterWorld, scale: Math.max(1.5, (craterR * 2.6) / 17 / S) });
+        this.fx.push({ kind: 'embers', ...craterWorld, scale: craterR });
+        this.fx.push({ kind: 'smoke', x: craterWorld.x - craterR * 0.4, y: craterWorld.y - 4, scale: 1.8 });
+        this.fx.push({ kind: 'smoke', x: craterWorld.x + craterR * 0.5, y: craterWorld.y + 2, scale: 1.4 });
+        this.fx.push({ kind: 'smoke', x: craterWorld.x, y: craterWorld.y + craterR * 0.4, scale: 1.1 });
     }
 
     private planSkull(rng: () => number, area: number): void {
@@ -486,7 +502,8 @@ export class IslandArt {
         this.pathStamp(pts, (r, x, y, w) => r.disc(x, y, w, Palette.shallows).disc(x, y, Math.max(0.6, w - 1.2), Palette.seaMid));
     }
 
-    private lavaFlow(rng: () => number, px: number, py: number, angle: number): void {
+    /** Draws a lava flow down to the sea; returns where it meets the water (art px). */
+    private lavaFlow(rng: () => number, px: number, py: number, angle: number): { x: number; y: number } {
         const raw = this.walkToSea(rng, px, py, angle, 0.5);
         const pts = raw.map((p, i) => ({ x: p.x, y: p.y, w: 2.2 - (i / raw.length) * 0.8 }));
         this.pathStamp(pts, (r, x, y, w) => r.disc(x, y, w + 0.8, 0x241a20));
@@ -494,6 +511,7 @@ export class IslandArt {
             r.disc(x, y, w, LAVA_EDGE).disc(x, y, w * 0.6, LAVA);
             if (hash(Math.round(x), Math.round(y), 5) < 0.3) r.blend(x, y, LAVA_HOT);
         });
+        return raw[raw.length - 1];
     }
 
     /** A colossal skull carved into rock, seen from above. `k` scales it up. */

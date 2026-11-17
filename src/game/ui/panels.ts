@@ -39,6 +39,18 @@ export const parchmentPanel = (scene: Scene, w: number, h: number): string => {
     return key;
 };
 
+/** Gold selection frame with corner studs, transparent inside. Cached per size. */
+export const selectFrame = (scene: Scene, w: number, h: number): string => {
+    const key = `select-${w}x${h}`;
+    if (scene.textures.exists(key)) return key;
+    const pc = new PixelCanvas(w, h);
+    pc.rect(0, 0, w, 2, Palette.gold).rect(0, h - 2, w, 2, Palette.gold).rect(0, 0, 2, h, Palette.gold).rect(w - 2, 0, 2, h, Palette.gold);
+    pc.rect(2, 2, w - 4, 1, Palette.goldShade).rect(2, h - 3, w - 4, 1, Palette.goldShade);
+    [[0, 0], [w - 5, 0], [0, h - 5], [w - 5, h - 5]].forEach(([x, y]) => pc.rect(x, y, 5, 5, Palette.cream).rect(x + 1, y + 1, 3, 3, Palette.gold));
+    pc.toTexture(scene, key);
+    return key;
+};
+
 /** Recessed cargo slot. */
 export const slotTexture = (scene: Scene, size: number): string => {
     const key = `slot-${size}`;

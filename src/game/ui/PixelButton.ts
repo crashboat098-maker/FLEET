@@ -56,6 +56,20 @@ export class PixelButton extends GameObjects.Container {
         scene.add.existing(this);
     }
 
+    setLabel(text: string): this {
+        this.label.setText(text.toUpperCase());
+        return this;
+    }
+
+    /** Disabled buttons are dimmed and ignore input. */
+    setEnabled(enabled: boolean): this {
+        if (enabled) this.setInteractive({ useHandCursor: true });
+        else this.disableInteractive();
+        this.setAlpha(enabled ? 1 : 0.45);
+        if (!enabled) this.setState('idle');
+        return this;
+    }
+
     override setState(value: string | number): this {
         super.setState(value);
         if (!this.plank) return this; // called by base constructor before init

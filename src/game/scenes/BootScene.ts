@@ -1,6 +1,7 @@
 import { Scene } from 'phaser';
 import { SceneKeys } from '../config/constants';
 import { bakePixelFonts } from '../gfx/pixelFont';
+import { generateLogo } from '../gfx/logo';
 import { generateTextures } from '../gfx/textures';
 
 /**
@@ -15,6 +16,7 @@ export class BootScene extends Scene {
     create(): void {
         bakePixelFonts(this);
         generateTextures(this);
+        generateLogo(this);
         this.scene.start(SceneKeys.Menu);
     }
 }

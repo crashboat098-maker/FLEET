@@ -3,7 +3,7 @@ import { GAME_HEIGHT, GAME_WIDTH, PIXEL_SCALE, SceneKeys } from '../config/const
 import { Director } from '../ai/Director';
 import { NpcRole } from '../ai/NpcShip';
 import { CannonSystem } from '../combat/CannonSystem';
-import { CombatWorld } from '../combat/Combatant';
+import { CombatWorld, inSafeHarbour, setSafeHarbours } from '../combat/Combatant';
 import { Kraken, Serpent, Shark } from '../creatures/Creatures';
 import { Fonts, pixelText } from '../gfx/pixelFont';
 import { CollectibleSystem } from '../entities/CollectibleSystem';
@@ -28,6 +28,7 @@ import { Depth } from '../world/worldConfig';
 import type { HudScene, HudSceneData, HudShipView } from './HudScene';
 import type { OceanSceneData } from './MenuScene';
 import type { PortSceneData, PortTab } from './PortScene';
+import type { ShipSelectSceneData } from './ShipSelectScene';
 
 /** The world layout is deterministic, so build it once per page load. */
 let cachedWorld: WorldData | null = null;
@@ -96,6 +97,11 @@ export class OceanScene extends Scene {
     private clock = 0;
     private leaving = false;
     private ready = false;
+    /** Start this voyage at the harbour's ship selection screen. */
+    private chooseShip = false;
+    /** The port whose safe radius the flagship is in (for enter/leave messages). */
+    private inHarbour: PortSystem | null = null;
+    private lastHarbourFireToast = -1e9;
 
     constructor() {
         super(SceneKeys.Ocean);
@@ -104,7 +110,9 @@ export class OceanScene extends Scene {
     init(data: Partial<OceanSceneData>): void {
         // Normally handed over by the menu; fall back to the save (or a fresh sloop) for dev reloads.
         let profile = data?.profile ?? loadProfile();
-        if (!profile || !profile.ships.length) {
+        this.chooseShip = !!data?.chooseShip && !!profile;
+        // A new captain from the menu arrives with no ships and picks one at port.
+        if (!profile || (!profile.ships.length && !this.chooseShip)) {
             profile = newProfile('CAPTAIN');
             const ship = createShip('sloop', 'active');
             profile.ships.push(ship);
@@ -149,6 +157,8 @@ export class OceanScene extends Scene {
         this.life = new IslandLife(this);
         this.terrain = new TerrainStreamer(this, world.islands, exclusions, this.life);
         this.ports = world.ports.map((p) => new PortSystem(this, p));
+        setSafeHarbours(this.ports.map((p) => p.safeZone));
+        this.inHarbour = null;
         const home = this.ports[0];
         this.lastPort = home;
         const spawn = home.layout.spawn;
@@ -179,7 +189,7 @@ export class OceanScene extends Scene {
         this.targetMarker = this.add.image(0, 0, 'fx-target').setScale(PIXEL_SCALE).setDepth(Depth.Collectible + 2).setVisible(false);
         cam.centerOn(spawn.x, spawn.y);
         cam.fadeIn(400, 6, 24, 43);
-        if (this.state.seaworthy) this.spawnShip(home);
+        if (this.state.seaworthy && !this.chooseShip) this.spawnShip(home);
 
         // --- Input
         const kb = this.input.keyboard!;
@@ -216,7 +226,9 @@ export class OceanScene extends Scene {
         this.ready = true;
 
         // Captain has no seaworthy flagship (e.g. it sank last session): start in the harbour.
-        if (!st.seaworthy) this.time.delayedCall(450, () => this.openPort(home, 'repair'));
+        // Every voyage from the menu starts in the harbour, choosing which ship to sail.
+        if (this.chooseShip) this.time.delayedCall(450, () => this.openShipSelect(home));
+        else if (!st.seaworthy) this.time.delayedCall(450, () => this.openPort(home, 'repair'));
 
         this.events.on('resume', () => this.onLeavePort());
         this.events.once('shutdown', () => {
@@ -327,7 +339,15 @@ export class OceanScene extends Scene {
     /** Fire a broadside if that side is loaded. side: -1 port, 1 starboard. */
     private fire(side: -1 | 1): void {
         const ship = this.ship;
-        if (!ship || !this.state.seaworthy || !ship.tryFire(side)) return;
+        if (!ship || !this.state.seaworthy) return;
+        if (inSafeHarbour(ship.x, ship.y)) {
+            if (this.clock - this.lastHarbourFireToast > 2000) {
+                this.lastHarbourFireToast = this.clock;
+                this.state.toast('NO CANNON FIRE IN A SAFE HARBOUR');
+            }
+            return;
+        }
+        if (!ship.tryFire(side)) return;
         const st = this.state.stats;
         this.cannons.fire(ship, side, Math.max(1, Math.ceil(st.cannons / 2)), st.cannonDamage);
     }
@@ -400,12 +420,23 @@ export class OceanScene extends Scene {
         this.population.update(delta, alive, cam.worldView);
         this.mermaids.update(delta, alive, cam.worldView);
         if (alive) {
+            this.updateHarbour();
             this.updateInteractions(delta);
             this.updateHazards(delta);
             this.updateDiscovery(delta);
             this.updateRegion(delta);
         }
         this.updateAtmosphere(delta);
+    }
+
+    /** Announce entering / leaving a port's safe radius. */
+    private updateHarbour(): void {
+        const ship = this.ship!;
+        const port = this.ports.find((p) => p.canDock(ship.x, ship.y)) ?? null;
+        if (port === this.inHarbour) return;
+        if (port) this.state.toast(`SAFE HARBOUR: ${port.layout.name.toUpperCase()}`);
+        else if (this.inHarbour) this.state.toast('LEFT SAFE HARBOUR - OPEN WATERS');
+        this.inHarbour = port;
     }
 
     private updateRegion(delta: number): void {
@@ -541,6 +572,16 @@ export class OceanScene extends Scene {
         this.state.settleDryDock();
         const data: PortSceneData = { state: this.state, world: this.world, features: this.features, portName: port.layout.name, portIndex: port.layout.index, tab };
         this.scene.launch(SceneKeys.Port, data);
+        this.scene.pause();
+    }
+
+    private openShipSelect(port: PortSystem): void {
+        this.lastPort = port;
+        this.state.prompt(null);
+        this.state.settleDryDock();
+        const portData: PortSceneData = { state: this.state, world: this.world, features: this.features, portName: port.layout.name, portIndex: port.layout.index, tab: 'fleet' };
+        const data: ShipSelectSceneData = { state: this.state, port: portData };
+        this.scene.launch(SceneKeys.ShipSelect, data);
         this.scene.pause();
     }
 

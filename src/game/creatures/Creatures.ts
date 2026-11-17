@@ -1,6 +1,6 @@
 import { GameObjects, Scene } from 'phaser';
 import { PIXEL_SCALE } from '../config/constants';
-import { Combatant, CombatWorld, Faction, hullDistance, newUid } from '../combat/Combatant';
+import { Combatant, CombatWorld, Faction, hullDistance, isProtected, newUid } from '../combat/Combatant';
 import { CombatTextures } from '../gfx/combatTextures';
 import type { DamageSource } from '../state/PlayerState';
 import { CollisionWorld } from '../world/CollisionWorld';
@@ -53,7 +53,7 @@ abstract class Creature implements Combatant {
     }
 
     takeHit(damage: number, _source: DamageSource, from: Combatant | null): void {
-        if (!this.alive || damage <= 0) return;
+        if (!this.alive || damage <= 0 || isProtected(this)) return;
         this.hp -= damage;
         if (from && from.faction !== 'monster') this.target = from;
         this.flashHit();
@@ -91,7 +91,7 @@ abstract class Creature implements Combatant {
         let best: Combatant | null = null;
         let bestD = range * range;
         for (const c of ctx.combat.near(this.x, this.y, range)) {
-            if (c.kind !== 'ship' || c.faction === 'monster') continue;
+            if (c.kind !== 'ship' || c.faction === 'monster' || isProtected(c)) continue;
             // Sharks go for small or wounded hulls.
             if (choosy && c.cls !== 'sloop' && c.hpRatio >= 0.5) continue;
             const d = (c.x - this.x) ** 2 + (c.y - this.y) ** 2 * (c === ctx.player ? 0.7 : 1);
@@ -138,7 +138,7 @@ export class Shark extends Creature {
             this.modeUntil = this.clock + 4000;
         }
         if (this.clock % 600 < deltaMs && this.mode === 'roam') this.target = this.pickPrey(ctx, 420, true);
-        const t = this.target && this.target.alive ? this.target : null;
+        const t = this.target && this.target.alive && !isProtected(this.target) ? this.target : null;
 
         if (this.mode === 'flee') {
             const a = t ? Math.atan2(this.x - t.x, -(this.y - t.y)) : this.heading;
@@ -223,7 +223,7 @@ export class Serpent extends Creature {
             const prey = this.pickPrey(ctx, 520, false);
             if (prey && (!this.target || !this.target.alive)) this.target = prey;
         }
-        const t = this.target && this.target.alive ? this.target : null;
+        const t = this.target && this.target.alive && !isProtected(this.target) ? this.target : null;
         const wiggle = Math.sin(this.clock / 260) * 0.5;
         if (t) {
             const bearing = Math.atan2(t.x - this.x, -(t.y - this.y));

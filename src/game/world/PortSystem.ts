@@ -3,7 +3,8 @@ import { PIXEL_SCALE } from '../config/constants';
 import { Fonts, pixelText } from '../gfx/pixelFont';
 import { makeDockTexture, PortTextures } from '../gfx/portTextures';
 import { CARDINAL_VEC, Circle, PortLayout } from './WorldGenerator';
-import { Depth, DOCK_RADIUS } from './worldConfig';
+import { Depth, HARBOUR_RADIUS } from './worldConfig';
+import { Palette } from '../config/palette';
 import { CombatTextures } from '../gfx/combatTextures';
 import { FxTextures } from '../gfx/fxTextures';
 import { tierOf } from './portTiers';
@@ -13,7 +14,8 @@ const DOCK_ANGLE = { S: 0, N: 180, E: -90, W: 90 } as const;
 
 /**
  * Builds one harbour's visuals and answers "is the ship inside this port's
- * docking radius?". The radius itself is never drawn.
+ * safe-harbour radius?" (dock from anywhere inside it; no fighting).
+ * The radius is drawn as a dashed ring on the water.
  */
 export class PortSystem {
     private readonly beam: GameObjects.Image | null = null;
@@ -27,6 +29,17 @@ export class PortSystem {
         const S = PIXEL_SCALE;
         const { dockBase, dockEnd, dockWidth, dir } = layout;
         const f = CARDINAL_VEC[dir];
+
+        // Safe-harbour ring: a faint tint inside a dashed rope line (drawn under land).
+        const ring = scene.add.graphics().setDepth(Depth.WaterFx + 1);
+        ring.fillStyle(Palette.cream, 0.05).fillCircle(dockEnd.x, dockEnd.y, HARBOUR_RADIUS);
+        const dashes = 64;
+        for (let i = 0; i < dashes; i += 2) {
+            const a0 = (i / dashes) * Math.PI * 2;
+            const a1 = ((i + 1) / dashes) * Math.PI * 2;
+            ring.lineStyle(4, Palette.woodDeep, 0.25).beginPath().arc(dockEnd.x, dockEnd.y, HARBOUR_RADIUS, a0, a1).strokePath();
+            ring.lineStyle(2, Palette.cream, 0.6).beginPath().arc(dockEnd.x, dockEnd.y, HARBOUR_RADIUS, a0, a1).strokePath();
+        }
 
         const length = Math.hypot(dockEnd.x - dockBase.x, dockEnd.y - dockBase.y);
         const dockKey = `dock-${Math.round(length)}`;
@@ -101,9 +114,14 @@ export class PortSystem {
         return Math.hypot(x - this.layout.dockEnd.x, y - this.layout.dockEnd.y);
     }
 
-    /** Inside the invisible docking radius? */
+    /** Inside the safe-harbour radius? (Dock from anywhere inside it.) */
     canDock(x: number, y: number): boolean {
-        return this.distanceToDock(x, y) <= DOCK_RADIUS;
+        return this.distanceToDock(x, y) <= HARBOUR_RADIUS;
+    }
+
+    /** The safe zone as a circle (centred on the dock head). */
+    get safeZone(): Circle {
+        return { x: this.layout.dockEnd.x, y: this.layout.dockEnd.y, r: HARBOUR_RADIUS };
     }
 
     update(deltaMs: number): void {

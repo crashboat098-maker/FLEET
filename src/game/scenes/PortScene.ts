@@ -4,9 +4,9 @@ import { Palette } from '../config/palette';
 import { Fonts, FontKey, pixelText } from '../gfx/pixelFont';
 import { PortTextures } from '../gfx/portTextures';
 import { generateOffers, MAX_ACTIVE_MISSIONS } from '../missions/missions';
-import { Formation, OwnedShip } from '../ships/profile';
+import { Formation, OwnedShip, STORAGE_CAPACITY } from '../ships/profile';
 import { formatMaterials, ratings, SHIP_CLASSES, UPGRADE_ORDER, upgradeCost, upgradeMaterials, UPGRADES } from '../ships/shipClasses';
-import { ITEM_ORDER, ITEMS } from '../state/items';
+import { countOf, ITEM_ORDER, ITEMS } from '../state/items';
 import { DRY_DOCK_MS, PlayerState } from '../state/PlayerState';
 import { parchmentPanel } from '../ui/panels';
 import { PixelButton } from '../ui/PixelButton';
@@ -14,7 +14,7 @@ import { PORT_TIERS, tierOf } from '../world/portTiers';
 import { WorldData } from '../world/WorldGenerator';
 import type { WorldFeatures } from '../world/worldFeatures';
 
-export type PortTab = 'repair' | 'upgrades' | 'trading' | 'missions' | 'fleet' | 'shipyard';
+export type PortTab = 'repair' | 'upgrades' | 'trading' | 'storage' | 'missions' | 'fleet' | 'shipyard';
 
 export interface PortSceneData {
     state: PlayerState;
@@ -27,12 +27,13 @@ export interface PortSceneData {
 
 const PANEL_W = 740;
 const PANEL_H = 412;
-const TAB_W = 98;
+const TAB_W = 86;
 const TAB_GAP = 4;
 const TABS: { id: PortTab | 'leave'; label: string }[] = [
     { id: 'repair', label: 'REPAIR' },
     { id: 'upgrades', label: 'UPGRADES' },
     { id: 'trading', label: 'TRADING' },
+    { id: 'storage', label: 'STORAGE' },
     { id: 'missions', label: 'MISSIONS' },
     { id: 'fleet', label: 'FLEET' },
     { id: 'shipyard', label: 'SHIPYARD' },
@@ -127,6 +128,7 @@ export class PortScene extends Scene {
             repair: () => this.renderRepair(),
             upgrades: () => this.renderUpgrades(),
             trading: () => this.renderTrading(),
+            storage: () => this.renderStorage(),
             missions: () => this.renderMissions(),
             fleet: () => this.renderFleet(),
             shipyard: () => this.renderShipyard()
@@ -290,6 +292,40 @@ export class PortScene extends Scene {
         }
         const parcels = s.cargo.filter((c) => c === 'parcel').length;
         this.text(L, y + 2, `CARGO ${s.cargo.length}/${s.cargoCapacity}${parcels ? `  (${parcels} MISSION PARCEL)` : ''}    GOLD ${s.gold}    EACH PORT HAS ITS OWN PRICES.`);
+    }
+
+    private renderStorage(): void {
+        const s = this.state;
+        const L = this.L;
+        let y = this.T;
+        this.text(L, y, `PORT STORAGE - SHARED BY EVERY PORT    USED ${s.storage.length}/${STORAGE_CAPACITY}`, Fonts.Ink, 1);
+        y += 16;
+        this.text(L + 340, y, 'IN HOLD', Fonts.Ink, 1, 0.5).setAlpha(0.7);
+        this.text(L + 440, y, 'IN STORAGE', Fonts.Ink, 1, 0.5).setAlpha(0.7);
+        y += 18;
+        for (const type of ITEM_ORDER) {
+            const def = ITEMS[type];
+            const held = countOf(s.cargo, type);
+            const stored = countOf(s.storage, type);
+            this.content.add(this.add.image(L + 12, y, def.texture).setScale(PIXEL_SCALE));
+            this.text(L + 34, y, def.name);
+            this.button(L + 170, y, 'STORE 1', () => this.act(s.storeItem(type, 1) > 0, `STORED 1 ${def.name}`, s.storageFull ? 'STORAGE IS FULL' : 'NONE IN THE HOLD'), held > 0 && !s.storageFull, 76);
+            this.button(L + 252, y, 'STORE ALL', () => {
+                const n = s.storeItem(type, held);
+                this.act(n > 0, `STORED ${n} ${def.name}${n < held ? ' - STORAGE FULL' : ''}`, 'STORAGE IS FULL');
+            }, held > 0 && !s.storageFull, 76);
+            this.text(L + 340, y, `${held}`, Fonts.Ink, 1, 0.5);
+            this.text(L + 440, y, `${stored}`, Fonts.Ink, 1, 0.5);
+            const canTake = stored > 0 && s.seaworthy && !s.cargoFull;
+            this.button(L + 530, y, 'TAKE 1', () => this.act(s.takeItem(type, 1) > 0, `TOOK 1 ${def.name}`, s.cargoFull ? 'CARGO HOLD IS FULL' : 'NONE IN STORAGE'), canTake, 76);
+            this.button(L + 612, y, 'TAKE ALL', () => {
+                const n = s.takeItem(type, stored);
+                this.act(n > 0, `TOOK ${n} ${def.name}${n < stored ? ' - HOLD FULL' : ''}`, 'CARGO HOLD IS FULL');
+            }, canTake, 76);
+            y += 32;
+        }
+        const parcels = countOf(s.cargo, 'parcel');
+        this.text(L, y + 2, `HOLD ${s.cargo.length}/${s.cargoCapacity}${parcels ? `  (${parcels} MISSION PARCEL - CANNOT BE STORED)` : ''}    STORED GOODS ARE SAFE IF YOUR SHIP SINKS.`);
     }
 
     private renderMissions(): void {

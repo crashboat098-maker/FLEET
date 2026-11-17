@@ -1,6 +1,6 @@
 import { GameObjects, Scene } from 'phaser';
 import { CannonSystem, CANNON_RANGE } from '../combat/CannonSystem';
-import { Combatant, CombatWorld, Faction, newUid } from '../combat/Combatant';
+import { Combatant, CombatWorld, Faction, isProtected, newUid } from '../combat/Combatant';
 import { CollectibleSystem } from '../entities/CollectibleSystem';
 import { ShipBody } from '../entities/ShipBody';
 import { Fonts, pixelText } from '../gfx/pixelFont';
@@ -150,7 +150,7 @@ export class NpcShip extends ShipBody implements Combatant {
     // --------------------------------------------------------------- combat
 
     takeHit(damage: number, source: DamageSource, from: Combatant | null): void {
-        if (!this.alive || damage <= 0) return;
+        if (!this.alive || damage <= 0 || isProtected(this)) return;
         this.hp = Math.max(0, this.hp - damage * (1 - this.stats.armor));
         this.lastHit = this.clock;
         if (from && from.faction !== this.faction) {
@@ -175,7 +175,8 @@ export class NpcShip extends ShipBody implements Combatant {
 
     private fire(side: -1 | 1, ctx: NpcContext): void {
         const key = side < 0 ? 'port' : 'starboard';
-        if (this.clock < this.reload[key]) return;
+        // No cannon fire from inside a safe harbour, for anyone.
+        if (this.clock < this.reload[key] || isProtected(this)) return;
         this.reload[key] = this.clock + this.stats.reloadMs * (0.9 + Math.random() * 0.4);
         ctx.cannons.fire(this, side, Math.ceil(this.stats.cannons / 2), this.stats.cannonDamage);
     }
@@ -324,12 +325,14 @@ export class NpcShip extends ShipBody implements Combatant {
         if (think) {
             const aggro = AGGRO[this.role] ?? 600;
             if (this.target && Math.hypot(this.target.x - this.x, this.target.y - this.y) > aggro * 1.8) this.target = null;
+            // Prey that reaches a safe harbour is let go.
+            if (this.target && isProtected(this.target)) this.target = null;
             if (!this.target) {
                 const p = ctx.player;
                 // Pirates prefer easy prey: small or damaged ships draw them from further away.
                 const weak = p && p.alive && (p.cls === 'sloop' || p.hpRatio < 0.5);
                 const pd = p ? Math.hypot(p.x - this.x, p.y - this.y) : Infinity;
-                if (p && p.alive && pd < aggro * (weak ? 1.3 : 1)) this.target = p;
+                if (p && p.alive && !isProtected(p) && pd < aggro * (weak ? 1.3 : 1)) this.target = p;
                 else this.target = ctx.combat.nearestHostile(this.x, this.y, aggro, this.faction, (c) => c.kind === 'ship');
             }
         }

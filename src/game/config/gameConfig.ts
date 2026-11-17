@@ -6,6 +6,7 @@ import { MenuScene } from '../scenes/MenuScene';
 import { OceanScene } from '../scenes/OceanScene';
 import { HudScene } from '../scenes/HudScene';
 import { PortScene } from '../scenes/PortScene';
+import { ShipSelectScene } from '../scenes/ShipSelectScene';
 
 export const createGameConfig = (parent: string): Types.Core.GameConfig => ({
     type: AUTO,
@@ -26,5 +27,5 @@ export const createGameConfig = (parent: string): Types.Core.GameConfig => ({
         activePointers: 2
     },
     // Boot is first, so it runs automatically.
-    scene: [BootScene, MenuScene, OceanScene, HudScene, PortScene]
+    scene: [BootScene, MenuScene, OceanScene, HudScene, PortScene, ShipSelectScene]
 });

@@ -1,6 +1,6 @@
 import { Events } from 'phaser';
 import { ActiveMission, applyMissionEvent, MAX_ACTIVE_MISSIONS, MissionEvent, missionDone } from '../missions/missions';
-import { createShip, Formation, OwnedShip, Profile, saveProfile, setActiveShip } from '../ships/profile';
+import { createShip, Formation, OwnedShip, Profile, saveProfile, setActiveShip, STORAGE_CAPACITY } from '../ships/profile';
 import { computeStats, SECURE, SHIP_CLASSES, ShipClassId, ShipStats, upgradeCost, UpgradeId, upgradeMaterials } from '../ships/shipClasses';
 import { tierOf } from '../world/portTiers';
 import { RegionId, REGIONS } from '../world/regions';
@@ -200,6 +200,48 @@ export class PlayerState extends Events.EventEmitter {
         return true;
     }
 
+    // -------------------------------------------------------- port storage
+
+    /** The shared warehouse: the same contents at every port. */
+    get storage(): ItemType[] {
+        return this.profile.storage;
+    }
+    get storageFull(): boolean {
+        return this.storage.length >= STORAGE_CAPACITY;
+    }
+
+    /** Move up to `count` of an item from the flagship's hold into storage. Returns how many moved. */
+    storeItem(item: ItemType, count = 1): number {
+        const ship = this.active;
+        if (!ship || item === 'parcel') return 0;
+        let moved = 0;
+        while (moved < count && !this.storageFull) {
+            const idx = ship.cargo.indexOf(item);
+            if (idx < 0) break;
+            ship.cargo.splice(idx, 1);
+            this.storage.push(item);
+            moved++;
+        }
+        if (moved) this.commit();
+        return moved;
+    }
+
+    /** Move up to `count` of an item from storage into the flagship's hold. Returns how many moved. */
+    takeItem(item: ItemType, count = 1): number {
+        const ship = this.active;
+        if (!ship || !this.seaworthy) return 0;
+        let moved = 0;
+        while (moved < count && !this.cargoFull) {
+            const idx = this.storage.indexOf(item);
+            if (idx < 0) break;
+            this.storage.splice(idx, 1);
+            ship.cargo.push(item);
+            moved++;
+        }
+        if (moved) this.commit();
+        return moved;
+    }
+
     // --------------------------------------------------------------- damage
 
     /**
@@ -393,6 +435,16 @@ export class PlayerState extends Events.EventEmitter {
         setActiveShip(this.profile, ship);
         this.commit();
         return true;
+    }
+
+    /** A new captain's free first ship. Only allowed while the fleet is empty. */
+    claimStarterShip(cls: ShipClassId): OwnedShip | null {
+        if (this.profile.ships.length > 0) return null;
+        const ship = createShip(cls, 'active');
+        this.profile.ships.push(ship);
+        this.profile.activeId = ship.id;
+        this.commit();
+        return ship;
     }
 
     deployEscort(ship: OwnedShip): boolean {

@@ -38,6 +38,24 @@ export interface Combatant {
     nudge(dx: number, dy: number): void;
 }
 
+// ------------------------------------------------------------ safe harbours
+
+/** Port safe zones (set once the world is built). */
+const harbours: { x: number; y: number; r: number }[] = [];
+
+export const setSafeHarbours = (zones: { x: number; y: number; r: number }[]): void => {
+    harbours.length = 0;
+    harbours.push(...zones);
+};
+
+export const inSafeHarbour = (x: number, y: number): boolean => harbours.some((h) => (h.x - x) ** 2 + (h.y - y) ** 2 <= h.r * h.r);
+
+/**
+ * Nothing inside a port's safe radius can be damaged or targeted — player,
+ * pirate, merchant or creature — even by shots fired from outside it.
+ */
+export const isProtected = (c: Pick<Combatant, 'x' | 'y'>): boolean => inSafeHarbour(c.x, c.y);
+
 let nextUid = 1;
 export const newUid = () => nextUid++;
 
@@ -85,7 +103,7 @@ export class CombatWorld {
         let best: Combatant | null = null;
         let bestD = r * r;
         for (const c of this.list) {
-            if (!c.alive || !isHostile(faction, c.faction) || (filter && !filter(c))) continue;
+            if (!c.alive || !isHostile(faction, c.faction) || isProtected(c) || (filter && !filter(c))) continue;
             const d = (c.x - x) ** 2 + (c.y - y) ** 2;
             if (d < bestD) {
                 bestD = d;
@@ -142,6 +160,8 @@ export class CombatWorld {
                 // Only deliberate rams hurt: the player, or a ship hostile to its victim.
                 // Accidental bumps from peaceful traffic just push apart.
                 if (atk.faction !== 'player' && !isHostile(atk.faction, def.faction)) continue;
+                // No fighting in a safe harbour, from either side.
+                if (isProtected(atk) || isProtected(def)) continue;
                 const r = resolveRam(atk.cls ?? 'sloop', def.cls ?? 'sloop', closing);
                 def.takeHit(r.toDefender, 'ram', atk);
                 atk.takeHit(r.toAttacker, 'ram', def);

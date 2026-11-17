@@ -10,8 +10,12 @@ export const SHALLOW_HALO = 64;
 /** Keep ships this far from the world edge. */
 export const WORLD_EDGE_MARGIN = 48;
 
-/** Invisible docking radius around each port's dock head (world units). */
-export const DOCK_RADIUS = 100;
+/**
+ * Safe-harbour radius around each port's dock head (world units). Inside it
+ * the player can dock from anywhere and can't be attacked (or fire cannons).
+ * Drawn as a dashed ring on the water.
+ */
+export const HARBOUR_RADIUS = 260;
 
 /** Draw-order bands. */
 export const Depth = {

@@ -25,7 +25,8 @@ export const SceneKeys = {
     Menu: 'Menu',
     Ocean: 'Ocean',
     Hud: 'Hud',
-    Port: 'Port'
+    Port: 'Port',
+    ShipSelect: 'ShipSelect'
 } as const;
 
 export type SceneKey = (typeof SceneKeys)[keyof typeof SceneKeys];

@@ -1,5 +1,5 @@
 import type { ActiveMission } from '../missions/missions';
-import { ItemType } from '../state/items';
+import { ItemType, ITEMS } from '../state/items';
 import { computeStats, emptyUpgrades, ShipClassId, SHIP_CLASSES, UpgradeLevels } from './shipClasses';
 
 /**
@@ -51,7 +51,12 @@ export interface Profile {
     stats: { kills: number; missions: number; treasure: number };
     /** One-time interactions (wreck salvage, shore chests): id -> time used (ms). */
     used: Record<string, number>;
+    /** Port storage: one warehouse shared by every port (never lost when a ship sinks). */
+    storage: ItemType[];
 }
+
+/** Slots in the shared port warehouse. */
+export const STORAGE_CAPACITY = 40;
 
 const STORAGE_KEY = 'fleet.profile.v1';
 export const STARTING_GOLD = 100;
@@ -89,7 +94,8 @@ export const newProfile = (captain: string): Profile => ({
     boardEpoch: [0, 0, 0, 0, 0],
     formation: 'wedge',
     stats: { kills: 0, missions: 0, treasure: 0 },
-    used: {}
+    used: {},
+    storage: []
 });
 
 /** Bring any older or partial save up to the current shape. */
@@ -106,6 +112,7 @@ const migrate = (raw: Record<string, unknown>): Profile | null => {
     p.formation ??= 'wedge';
     p.stats ??= { kills: 0, missions: 0, treasure: 0 };
     p.used ??= {};
+    p.storage = Array.isArray(p.storage) ? p.storage.filter((t) => t in ITEMS && t !== 'parcel') : [];
     for (const s of p.ships) {
         if ((s.status as string) === 'docked') s.status = 'stored';
         if (!SHIP_CLASSES[s.cls]) s.cls = 'sloop';

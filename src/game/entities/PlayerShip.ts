@@ -1,6 +1,6 @@
 import { Input, Scene } from 'phaser';
 import { SPEED_CAP } from '../config/constants';
-import { Combatant, Faction, newUid } from '../combat/Combatant';
+import { Combatant, Faction, isProtected, newUid } from '../combat/Combatant';
 import { ShipClassId, ShipStats, TAILWIND } from '../ships/shipClasses';
 import type { DamageSource } from '../state/PlayerState';
 import { CollisionWorld } from '../world/CollisionWorld';
@@ -81,6 +81,7 @@ export class PlayerShip extends ShipBody implements Combatant {
         return this.getStats().creatureMult;
     }
     takeHit(damage: number, source: DamageSource, from: Combatant | null): void {
+        if (isProtected(this)) return; // safe harbour
         this.onHit?.(damage, source, from);
     }
 

@@ -1,6 +1,6 @@
 import { GameObjects, Math as PMath, Scene } from 'phaser';
 import { PIXEL_SCALE } from '../config/constants';
-import { Combatant, CombatWorld, Faction, hullDistance, newUid } from '../combat/Combatant';
+import { Combatant, CombatWorld, Faction, hullDistance, isProtected, newUid } from '../combat/Combatant';
 import { Fonts, pixelText } from '../gfx/pixelFont';
 import { personKey, PersonKind, WorldTextures } from '../gfx/worldTextures';
 import { ItemType } from '../state/items';
@@ -59,7 +59,7 @@ class Archer implements Combatant {
         return this.hp / 12;
     }
     takeHit(d: number, _s: DamageSource, from: Combatant | null): void {
-        if (!this.alive) return;
+        if (!this.alive || isProtected(this)) return;
         this.hp -= d;
         this.img.setTint(0xff6b5a);
         this.img.scene.time.delayedCall(120, () => this.img.active && this.img.clearTint());
@@ -260,7 +260,7 @@ export class IslandPopulation {
             for (const a of live.archers) {
                 if (!a.alive) continue;
                 a.reload -= deltaMs;
-                const target = player && player.alive && Math.hypot(player.x - a.x, player.y - a.y) < ARCHER_RANGE ? player : null;
+                const target = player && player.alive && !isProtected(player) && Math.hypot(player.x - a.x, player.y - a.y) < ARCHER_RANGE ? player : null;
                 if (!target || a.reload > 0) continue;
                 a.reload = 2200 + Math.random() * 800;
                 a.img.setTexture(personKey('archer', 1));

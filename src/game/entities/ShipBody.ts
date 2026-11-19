@@ -1,7 +1,7 @@
 import { Scene } from 'phaser';
-import { PIXEL_SCALE, SPEED_CAP } from '../config/constants';
+import { PIXEL_SCALE } from '../config/constants';
 import { ShipSprite, ShipSpriteOptions } from '../gfx/ShipSprite';
-import { ShipClassId, ShipStats } from '../ships/shipClasses';
+import { ShipClassId, ShipStats, speedCapOf } from '../ships/shipClasses';
 import { CollisionWorld } from '../world/CollisionWorld';
 import { WORLD_EDGE_MARGIN } from '../world/worldConfig';
 
@@ -128,7 +128,7 @@ export class ShipBody {
         else if (reverse) fwd = fwd > 0 ? Math.max(0, fwd - H.brake * dt) : Math.max(-H.reverseMax, fwd - accel * 0.4 * dt);
         else fwd *= Math.exp(-H.coastDrag * dt);
         if (Math.abs(fwd) < 0.5 && throttle === 0 && !reverse) fwd = 0;
-        fwd = Math.min(fwd, SPEED_CAP);
+        fwd = Math.min(fwd, speedCapOf(this.cls));
         lat *= Math.exp(-H.keelGrip * dt);
         this.vx = fwd * sin + lat * cos;
         this.vy = -fwd * cos + lat * sin;

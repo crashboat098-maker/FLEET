@@ -81,8 +81,8 @@ export class NpcShip extends ShipBody implements Combatant {
     readonly faction: Faction;
     readonly kind = 'ship' as const;
     readonly role: NpcRole;
-    readonly name: string;
-    readonly stats: ShipStats;
+    name: string;
+    stats: ShipStats;
     readonly owned?: OwnedShip;
     readonly missionId?: number;
     readonly tag?: string;
@@ -104,7 +104,7 @@ export class NpcShip extends ShipBody implements Combatant {
     private avoidTimer = 0;
     private steerHeading = 0;
     private blocked = false;
-    private reload = { port: 0, starboard: 0 };
+    private reload = { port: 0, starboard: 0, bow: 0, stern: 0 };
     private stuck = { x: 0, y: 0, t: 0 };
     private unstickUntil = 0;
     private lastHit = -1e9;
@@ -143,6 +143,16 @@ export class NpcShip extends ShipBody implements Combatant {
     get hpRatio(): number {
         return this.hp / this.stats.maxHp;
     }
+
+    /** Escorts: re-read name, hull and upgrades from the owned ship (after a rename, repair or refit at port). */
+    syncFromOwned(): void {
+        if (!this.owned || !this.alive) return;
+        this.name = this.owned.name;
+        this.label.setText(this.name);
+        this.stats = computeStats(this.owned.cls, this.owned.upgrades);
+        this.hp = Math.max(0, Math.min(this.owned.hp, this.stats.maxHp));
+        this.sprite.setDamageLevel(damageLevelOf(this.hp, this.stats.maxHp));
+    }
     get creatureMult(): number {
         return this.stats.creatureMult;
     }
@@ -179,6 +189,17 @@ export class NpcShip extends ShipBody implements Combatant {
         if (this.clock < this.reload[key] || isProtected(this)) return;
         this.reload[key] = this.clock + this.stats.reloadMs * (0.9 + Math.random() * 0.4);
         ctx.cannons.fire(this, side, Math.ceil(this.stats.cannons / 2), this.stats.cannonDamage);
+    }
+
+    /** Bow / stern chasers (escorts with Cannons upgrades): fire when the target is dead ahead or astern. */
+    private fireChasers(t: Combatant, rel: number, d: number, ctx: NpcContext): void {
+        if (d > CANNON_RANGE * 0.92 || isProtected(this)) return;
+        const ARC = 0.3;
+        const end: 'bow' | 'stern' | null = this.stats.bowGuns && Math.abs(rel) < ARC ? 'bow' : this.stats.sternGuns && Math.abs(rel) > Math.PI - ARC ? 'stern' : null;
+        if (!end || this.clock < this.reload[end]) return;
+        this.reload[end] = this.clock + this.stats.reloadMs * (0.9 + Math.random() * 0.4);
+        ctx.cannons.fireChaser(this, end === 'bow' ? 1 : -1, this.stats.cannonDamage);
+        void t;
     }
 
     // ----------------------------------------------------------- navigation
@@ -348,11 +369,13 @@ export class NpcShip extends ShipBody implements Combatant {
         const dy = t.y - this.y;
         const d = Math.hypot(dx, dy);
         const bearing = Math.atan2(dx, -dy);
+        const rel = wrap(bearing - this.heading);
+        // Bow gun while chasing, stern gun while being chased.
+        this.fireChasers(t, rel, d, ctx);
         if (d > 230) {
             // Lead the target a little.
             return this.navigate(t.x + t.vx * 1.2, t.y + t.vy * 1.2, 1, deltaMs, ctx);
         }
-        const rel = wrap(bearing - this.heading);
         const side: -1 | 1 = rel >= 0 ? 1 : -1;
         // Turn so the target sits abeam; edge closer or further to hold ~170 units.
         const drift = d > 190 ? 0.35 : d < 120 ? -0.35 : 0;

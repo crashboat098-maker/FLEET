@@ -6,8 +6,9 @@ import { SPEED_CAP } from '../config/constants';
  *
  * Every number that affects handling, durability or combat lives here so
  * upgrades (sails, hull, cannons, rudder, cargo, harpoons) only touch this
- * table. All speeds are clamped to SPEED_CAP — no class, upgrade or ability
- * can ever exceed it.
+ * table. Every class has its own speed cap — SPEED_CAP (84) for most, but a
+ * fully sail-upgraded sloop reaches SLOOP_SPEED_CAP (100, shark speed). No
+ * upgrade or ability can push a ship past its class cap.
  */
 
 export type ShipClassId = 'sloop' | 'brigantine' | 'galleon' | 'corsair';
@@ -28,8 +29,12 @@ export interface ShipStats {
     /** Fraction of incoming damage ignored (0..1). */
     armor: number;
     cargo: number;
-    /** Total cannons (split between port and starboard). */
+    /** Total broadside cannons (split between port and starboard). */
     cannons: number;
+    /** Forward-firing bow chaser (unlocked by the 1st Cannons upgrade). */
+    bowGuns: number;
+    /** Rear-firing stern chaser (unlocked by the 2nd Cannons upgrade). */
+    sternGuns: number;
     /** Damage per cannonball. */
     cannonDamage: number;
     /** Broadside reload time (ms) per side. */
@@ -61,9 +66,22 @@ export interface ShipClassDef {
     ability: AbilityDef;
     /** Multiplier on upgrade prices (bigger ships cost more to refit). */
     upgradeCostMult: number;
+    /** Can this class mount a stern gun (Cannons upgrade 2)? Sloops can't. */
+    sternGun: boolean;
+    /** This class's absolute speed limit (SPEED_CAP for most; the sloop can reach shark speed). */
+    speedCap: number;
+    /** Top speed added per Sails upgrade level. */
+    sailSpeedPerLevel: number;
 }
 
-const base = { creatureMult: 1 };
+/** A fully sail-upgraded sloop matches a charging shark. */
+export const SLOOP_SPEED_CAP = 100;
+
+const base = { creatureMult: 1, bowGuns: 0, sternGuns: 0 };
+
+/** Cannons upgrade tier that adds the bow gun, and the one that adds the stern gun. */
+export const BOW_GUN_TIER = 1;
+export const STERN_GUN_TIER = 2;
 
 export const SHIP_CLASSES: Record<ShipClassId, ShipClassDef> = {
     sloop: {
@@ -73,9 +91,14 @@ export const SHIP_CLASSES: Record<ShipClassId, ShipClassDef> = {
         price: 400,
         requiredLevel: 1,
         upgradeCostMult: 1,
+        // Too small for a stern gun: sloops only ever get the bow gun.
+        sternGun: false,
+        // Max Sails (tier 4) takes the sloop from 77 to 100 — as fast as a charging shark.
+        speedCap: SLOOP_SPEED_CAP,
+        sailSpeedPerLevel: (SLOOP_SPEED_CAP - 77) / 4,
         stats: {
             ...base,
-            maxSpeed: 70,
+            maxSpeed: 77,
             reverseMax: 20,
             accel: 34,
             brake: 60,
@@ -103,6 +126,9 @@ export const SHIP_CLASSES: Record<ShipClassId, ShipClassDef> = {
         price: 1500,
         requiredLevel: 3,
         upgradeCostMult: 1.5,
+        sternGun: true,
+        speedCap: SPEED_CAP,
+        sailSpeedPerLevel: 3,
         stats: {
             ...base,
             maxSpeed: 60,
@@ -133,6 +159,9 @@ export const SHIP_CLASSES: Record<ShipClassId, ShipClassDef> = {
         price: 2200,
         requiredLevel: 4,
         upgradeCostMult: 1.8,
+        sternGun: true,
+        speedCap: SPEED_CAP,
+        sailSpeedPerLevel: 3,
         stats: {
             ...base,
             maxSpeed: 50,
@@ -163,6 +192,9 @@ export const SHIP_CLASSES: Record<ShipClassId, ShipClassDef> = {
         price: 4500,
         requiredLevel: 7,
         upgradeCostMult: 2,
+        sternGun: true,
+        speedCap: SPEED_CAP,
+        sailSpeedPerLevel: 3,
         stats: {
             ...base,
             maxSpeed: 64,
@@ -187,6 +219,9 @@ export const SHIP_CLASSES: Record<ShipClassId, ShipClassDef> = {
         ability: { id: 'broadside', name: 'BROADSIDE', active: false, description: ['PASSIVE: RAMMING SHIPS DEALS', 'DOUBLE DAMAGE, TAKES HALF'] }
     }
 };
+
+/** A class's own speed limit — nothing (upgrades, Tailwind) can push a ship of this class past it. */
+export const speedCapOf = (cls: ShipClassId): number => SHIP_CLASSES[cls].speedCap;
 
 /** Classes offered on the start screen. */
 export const STARTER_CLASSES: ShipClassId[] = ['sloop', 'brigantine', 'galleon'];
@@ -214,7 +249,7 @@ export interface UpgradeDef {
 export const UPGRADES: Record<UpgradeId, UpgradeDef> = {
     hull: { id: 'hull', name: 'HULL', maxLevel: 4, costs: [100, 260, 550, 1000], effect: '+15% MAX HULL' },
     cannons: { id: 'cannons', name: 'CANNONS', maxLevel: 4, costs: [120, 300, 620, 1100], effect: '+15% DAMAGE, -8% RELOAD' },
-    sails: { id: 'sails', name: 'SAILS', maxLevel: 4, costs: [140, 320, 650, 1150], effect: '+3 SPEED, +8% ACCEL (CAPPED)' },
+    sails: { id: 'sails', name: 'SAILS', maxLevel: 4, costs: [140, 320, 650, 1150], effect: '+SPEED, +8% ACCEL (CAPPED)' },
     rudder: { id: 'rudder', name: 'RUDDER', maxLevel: 4, costs: [100, 240, 500, 900], effect: '+10% TURNING' },
     cargo: { id: 'cargo', name: 'CARGO', maxLevel: 4, costs: [80, 200, 420, 800], effect: '+1 CARGO SLOT' },
     harpoons: { id: 'harpoons', name: 'HARPOONS', maxLevel: 4, costs: [100, 250, 520, 950], effect: '+25% DAMAGE VS CREATURES' }
@@ -237,13 +272,15 @@ export const computeStats = (cls: ShipClassId, up: UpgradeLevels): ShipStats => 
     const b = SHIP_CLASSES[cls].stats;
     return {
         ...b,
-        maxSpeed: Math.min(SPEED_CAP, b.maxSpeed + 3 * up.sails),
+        maxSpeed: Math.min(SHIP_CLASSES[cls].speedCap, Math.round(b.maxSpeed + SHIP_CLASSES[cls].sailSpeedPerLevel * up.sails)),
         accel: b.accel * (1 + 0.08 * up.sails),
         turnRate: b.turnRate * (1 + 0.1 * up.rudder),
         turnResponse: b.turnResponse * (1 + 0.1 * up.rudder),
         maxHp: Math.round(b.maxHp * (1 + 0.15 * up.hull)),
         cargo: b.cargo + up.cargo,
         cannonDamage: b.cannonDamage * (1 + 0.15 * up.cannons),
+        bowGuns: up.cannons >= BOW_GUN_TIER ? 1 : 0,
+        sternGuns: SHIP_CLASSES[cls].sternGun && up.cannons >= STERN_GUN_TIER ? 1 : 0,
         reloadMs: b.reloadMs * (1 - 0.08 * up.cannons),
         harpoons: b.harpoons + up.harpoons,
         creatureMult: 1 + 0.25 * up.harpoons

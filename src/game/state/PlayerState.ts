@@ -1,7 +1,7 @@
 import { Events } from 'phaser';
 import { ActiveMission, applyMissionEvent, MAX_ACTIVE_MISSIONS, MissionEvent, missionDone } from '../missions/missions';
-import { createShip, Formation, OwnedShip, Profile, saveProfile, setActiveShip, STORAGE_CAPACITY } from '../ships/profile';
-import { computeStats, SECURE, SHIP_CLASSES, ShipClassId, ShipStats, upgradeCost, UpgradeId, upgradeMaterials } from '../ships/shipClasses';
+import { cleanShipName, createShip, Formation, OwnedShip, Profile, saveProfile, setActiveShip, STORAGE_CAPACITY } from '../ships/profile';
+import { computeStats, SECURE, SHIP_CLASSES, ShipClassId, ShipStats, upgradeCost, UpgradeId, upgradeMaterials, UPGRADE_ORDER, UPGRADES } from '../ships/shipClasses';
 import { tierOf } from '../world/portTiers';
 import { RegionId, REGIONS } from '../world/regions';
 import { countOf, ITEMS, ItemType, Material } from './items';
@@ -297,25 +297,28 @@ export class PlayerState extends Events.EventEmitter {
 
     /**
      * Repairs need labour (gold) and Wood: 1 Wood per 30 hull points. Wood is
-     * taken from the ship's own hold, then the flagship's; any shortfall is
-     * bought from the shipwright at this port's price and added to the bill.
+     * taken from port storage first, then the ship's own hold, then the
+     * flagship's; any shortfall is bought from the shipwright at this port's
+     * price and added to the bill. Repairs only happen when the player clicks.
      */
-    repairQuote(ship: OwnedShip, port: number, labourMult = 1): { gold: number; wood: number; fromHold: number; bought: number } {
+    repairQuote(ship: OwnedShip, port: number, labourMult = 1): { gold: number; wood: number; fromStorage: number; fromHold: number; bought: number } {
         const missing = Math.max(0, this.statsOf(ship).maxHp - ship.hp);
-        if (missing <= 0) return { gold: 0, wood: 0, fromHold: 0, bought: 0 };
+        if (missing <= 0) return { gold: 0, wood: 0, fromStorage: 0, fromHold: 0, bought: 0 };
         const wood = Math.ceil(missing / 30);
+        const fromStorage = Math.min(wood, countOf(this.storage, 'wood'));
         const held = countOf(ship.cargo, 'wood') + (this.active && this.active !== ship ? countOf(this.active.cargo, 'wood') : 0);
-        const fromHold = Math.min(wood, held);
-        const bought = wood - fromHold;
+        const fromHold = Math.min(wood - fromStorage, held);
+        const bought = wood - fromStorage - fromHold;
         const labour = Math.ceil(missing * 1.2 * tierOf(port).repairRate * labourMult);
-        return { gold: labour + bought * (this.buyPrice('wood', port) ?? 14), wood, fromHold, bought };
+        return { gold: labour + bought * (this.buyPrice('wood', port) ?? 14), wood, fromStorage, fromHold, bought };
     }
 
     repairCost(ship: OwnedShip, port: number): number {
         return this.repairQuote(ship, port).gold;
     }
 
-    private takeWood(ship: OwnedShip, n: number): void {
+    private takeWood(ship: OwnedShip, n: number, fromStorage = 0): void {
+        for (let i = 0; i < fromStorage; i++) this.storage.splice(this.storage.indexOf('wood'), 1);
         for (const holder of [ship, this.active]) {
             while (n > 0 && holder && holder.cargo.includes('wood')) {
                 holder.cargo.splice(holder.cargo.indexOf('wood'), 1);
@@ -327,7 +330,7 @@ export class PlayerState extends Events.EventEmitter {
     repair(ship: OwnedShip, port: number): boolean {
         const q = this.repairQuote(ship, port);
         if (ship.status === 'sunk' || ship.status === 'repair' || q.gold <= 0 || !this.spend(q.gold)) return false;
-        this.takeWood(ship, q.fromHold);
+        this.takeWood(ship, q.fromHold, q.fromStorage);
         ship.hp = this.statsOf(ship).maxHp;
         this.commit();
         return true;
@@ -337,7 +340,7 @@ export class PlayerState extends Events.EventEmitter {
     dryDock(ship: OwnedShip, port: number): boolean {
         const q = this.repairQuote(ship, port, 0.5);
         if (ship.status !== 'stored' || q.gold <= 0 || !this.spend(q.gold)) return false;
-        this.takeWood(ship, q.fromHold);
+        this.takeWood(ship, q.fromHold, q.fromStorage);
         ship.status = 'repair';
         ship.repairUntil = Date.now() + DRY_DOCK_MS;
         this.commit();
@@ -354,12 +357,29 @@ export class PlayerState extends Events.EventEmitter {
         return countOf(this.cargo, m);
     }
 
-    /** Which materials the flagship is short of for a requirement (empty = ok). */
+    /** Materials available for upgrades: port storage plus the flagship's hold. */
+    availableMaterial(m: Material): number {
+        return countOf(this.storage, m) + this.materialCount(m);
+    }
+
+    /** Which materials are short for a requirement, counting storage and hold (empty = ok). */
     missingMaterials(req: Partial<Record<Material, number>>): string {
         return Object.entries(req)
-            .filter(([m, n]) => this.materialCount(m as Material) < (n ?? 0))
-            .map(([m, n]) => `${(n ?? 0) - this.materialCount(m as Material)} ${m.toUpperCase()}`)
+            .filter(([m, n]) => this.availableMaterial(m as Material) < (n ?? 0))
+            .map(([m, n]) => `${(n ?? 0) - this.availableMaterial(m as Material)} ${m.toUpperCase()}`)
             .join(' + ');
+    }
+
+    /** Use up materials: port storage first, then the flagship's hold. */
+    private consumeMaterials(req: Partial<Record<Material, number>>): void {
+        const hold = this.active?.cargo ?? [];
+        for (const [m, n] of Object.entries(req)) {
+            for (let i = 0; i < (n ?? 0); i++) {
+                const s = this.storage.indexOf(m as Material);
+                if (s >= 0) this.storage.splice(s, 1);
+                else hold.splice(hold.indexOf(m as Material), 1);
+            }
+        }
     }
 
     /**
@@ -414,12 +434,12 @@ export class PlayerState extends Events.EventEmitter {
         return ship.status === 'sunk' && !anyAfloat && this.gold < this.recoveryCost(ship);
     }
 
-    /** Raise a sunk ship: keeps class, upgrades and protected cargo; returns at 35% hull. */
+    /** Raise a sunk ship: keeps class, upgrades and protected cargo; comes back fully repaired. */
     recover(ship: OwnedShip): boolean {
         if (ship.status !== 'sunk') return false;
         const free = this.freeTowAvailable(ship);
         if (!free && !this.spend(this.recoveryCost(ship))) return false;
-        ship.hp = Math.ceil(this.statsOf(ship).maxHp * 0.35);
+        ship.hp = this.statsOf(ship).maxHp;
         ship.cargo = [...ship.cargo, ...ship.protectedCargo];
         ship.protectedCargo = [];
         ship.status = 'stored';
@@ -429,6 +449,15 @@ export class PlayerState extends Events.EventEmitter {
     }
 
     // ---------------------------------------------------------------- fleet
+
+    /** Give one of your ships a new name. Returns the saved name, or null if it was empty. */
+    renameShip(ship: OwnedShip, raw: string): string | null {
+        const name = cleanShipName(raw);
+        if (!name || !this.ships.includes(ship)) return null;
+        ship.name = name;
+        this.commit();
+        return name;
+    }
 
     makeFlagship(ship: OwnedShip): boolean {
         if (ship.status === 'sunk' || ship.status === 'repair') return false;
@@ -489,9 +518,7 @@ export class PlayerState extends Events.EventEmitter {
         const cost = upgradeCost(ship.cls, id, lvl);
         const mats = upgradeMaterials(id, lvl);
         if (cost === null || this.missingMaterials(mats) || !this.spend(cost)) return false;
-        for (const [m, n] of Object.entries(mats)) {
-            for (let i = 0; i < (n ?? 0); i++) ship.cargo.splice(ship.cargo.indexOf(m as Material), 1);
-        }
+        this.consumeMaterials(mats);
         const before = this.statsOf(ship).maxHp;
         ship.upgrades[id]++;
         // A hull upgrade raises max HP; keep the same amount of damage.
@@ -506,7 +533,18 @@ export class PlayerState extends Events.EventEmitter {
         return this.level >= SHIP_CLASSES[cls].requiredLevel && this.gold >= SHIP_CLASSES[cls].price;
     }
 
+    /** Owned ships that still have upgrades left to buy. */
+    get shipsNotMaxed(): OwnedShip[] {
+        return this.ships.filter((s) => UPGRADE_ORDER.some((id) => s.upgrades[id] < UPGRADES[id].maxLevel));
+    }
+
+    /** A new ship can only be bought once every ship you own is fully upgraded. */
+    get canBuyShips(): boolean {
+        return this.shipsNotMaxed.length === 0;
+    }
+
     buyShip(cls: ShipClassId): OwnedShip | null {
+        if (!this.canBuyShips) return null;
         if (this.level < SHIP_CLASSES[cls].requiredLevel || !this.spend(SHIP_CLASSES[cls].price)) return null;
         const ship = createShip(cls);
         this.profile.ships.push(ship);

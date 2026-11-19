@@ -54,7 +54,8 @@ export const PORT_TIERS: Record<number, PortTierDef> = {
         services: 'IMPROVED MARKET - BETTER REPAIRS - MORE UPGRADES - MERCHANT MISSIONS',
         advantage: 'BEST PRICES FOR RUM AND CRATES, CHEAP CLOTH',
         repairRate: 1.2,
-        upgradeCap: caps(2, 1, 2, 2, 2, 1),
+        // Cannons 2 here so ships can get their stern gun without reaching a naval harbour.
+        upgradeCap: caps(2, 2, 2, 2, 2, 1),
         shipyard: ['sloop', 'galleon'],
         missionKinds: ['deliver', 'escort', 'missing', 'lost'],
         prices: { barrel: { sell: 1.3, buy: 0.9 }, crate: { sell: 1.25, buy: 0.9 }, cloth: { sell: 1, buy: 0.75 } },

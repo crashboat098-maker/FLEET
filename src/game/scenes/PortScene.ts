@@ -1,12 +1,14 @@
 import { GameObjects, Scene } from 'phaser';
-import { GAME_HEIGHT, GAME_WIDTH, PIXEL_SCALE, SceneKeys, SPEED_CAP } from '../config/constants';
+import { GAME_HEIGHT, GAME_WIDTH, PIXEL_SCALE, SceneKeys } from '../config/constants';
 import { Palette } from '../config/palette';
 import { Fonts, FontKey, pixelText } from '../gfx/pixelFont';
 import { PortTextures } from '../gfx/portTextures';
 import { generateOffers, MAX_ACTIVE_MISSIONS } from '../missions/missions';
-import { Formation, OwnedShip, STORAGE_CAPACITY } from '../ships/profile';
-import { formatMaterials, ratings, SHIP_CLASSES, UPGRADE_ORDER, upgradeCost, upgradeMaterials, UPGRADES } from '../ships/shipClasses';
-import { countOf, ITEM_ORDER, ITEMS } from '../state/items';
+import { OwnedShip, SHIP_NAME_MAX, STORAGE_CAPACITY } from '../ships/profile';
+import { FORMATION_ORDER } from '../ships/formation';
+import { formationIcon } from '../gfx/formationIcons';
+import { BOW_GUN_TIER, computeStats, formatMaterials, ratings, SHIP_CLASSES, speedCapOf, STERN_GUN_TIER, UPGRADE_ORDER, upgradeCost, upgradeMaterials, UPGRADES } from '../ships/shipClasses';
+import { countOf, ITEM_ORDER, ITEMS, MATERIALS } from '../state/items';
 import { DRY_DOCK_MS, PlayerState } from '../state/PlayerState';
 import { parchmentPanel } from '../ui/panels';
 import { PixelButton } from '../ui/PixelButton';
@@ -28,6 +30,8 @@ export interface PortSceneData {
 const PANEL_W = 740;
 const PANEL_H = 412;
 const TAB_W = 86;
+/** Ships per page in the Fleet Manager. */
+const FLEET_PAGE = 5;
 const TAB_GAP = 4;
 const TABS: { id: PortTab | 'leave'; label: string }[] = [
     { id: 'repair', label: 'REPAIR' },
@@ -54,6 +58,9 @@ export class PortScene extends Scene {
     private tabMarker!: GameObjects.Rectangle;
     private leaveBtn!: PixelButton;
     private closing = false;
+    private fleetPage = 0;
+    /** Ship whose name is being typed in the Fleet tab. */
+    private renaming: { id: string; text: string } | null = null;
     private left = 0;
     private top = 0;
 
@@ -65,6 +72,8 @@ export class PortScene extends Scene {
         this.data_ = data;
         this.tab = data.tab ?? 'repair';
         this.closing = false;
+        this.fleetPage = 0;
+        this.renaming = null;
     }
 
     private get state(): PlayerState {
@@ -101,18 +110,42 @@ export class PortScene extends Scene {
         this.show(this.tab);
 
         // Ignore the keypress that opened the port.
-        this.time.delayedCall(250, () => {
-            const kb = this.input.keyboard!;
-            kb.on('keydown-ESC', () => this.leave());
-            kb.on('keydown-E', () => this.leave());
-        });
+        // One key handler: while a ship name is being typed, keys go to the name (so E and ESC don't leave port).
+        this.time.delayedCall(250, () => this.input.keyboard!.on('keydown', (e: KeyboardEvent) => this.onKey(e)));
         // Dry-dock timers tick while the menu is open.
         this.time.addEvent({ delay: 1000, loop: true, callback: () => this.state.settleDryDock() && this.render() });
     }
 
     // ------------------------------------------------------------- framework
 
+    private onKey(e: KeyboardEvent): void {
+        if (this.renaming) {
+            const ship = this.state.ships.find((s) => s.id === this.renaming!.id);
+            if (e.key === 'Enter') {
+                const saved = ship ? this.state.renameShip(ship, this.renaming.text) : null;
+                this.renaming = null;
+                if (saved) this.say(`RENAMED TO ${saved}`);
+                else this.say('NAME CANNOT BE EMPTY - KEPT THE OLD NAME');
+            } else if (e.key === 'Escape') {
+                this.renaming = null;
+                this.say('RENAME CANCELLED');
+            } else if (e.key === 'Backspace') this.renaming.text = this.renaming.text.slice(0, -1);
+            else if (/^[a-zA-Z0-9 '-]$/.test(e.key) && this.renaming.text.length < SHIP_NAME_MAX) this.renaming.text += e.key.toUpperCase();
+            this.render();
+            return;
+        }
+        if (e.key === 'Escape' || e.key === 'e' || e.key === 'E') this.leave();
+    }
+
+    /** Click a ship's name in the Fleet tab to start typing a new one. */
+    private startRename(ship: OwnedShip): void {
+        this.renaming = { id: ship.id, text: ship.name };
+        this.say('TYPE A NEW NAME - ENTER TO SAVE, ESC TO CANCEL');
+        this.render();
+    }
+
     private show(tab: PortTab): void {
+        this.renaming = null;
         this.tab = tab;
         const i = TABS.findIndex((t) => t.id === tab);
         const startX = GAME_WIDTH / 2 - (TABS.length * TAB_W + (TABS.length - 1) * TAB_GAP) / 2 + TAB_W / 2;
@@ -197,7 +230,10 @@ export class PortScene extends Scene {
             this.text(L + 62, y, `${ship.name} (${SHIP_CLASSES[ship.cls].name})${ship.status === 'active' ? ' FLAGSHIP' : ''}`);
             this.text(L + 62, y + 12, `HULL ${Math.ceil(ship.hp)}/${max}`);
             this.bar(L + 160, y + 12, 120, ship.hp / max);
-            if (q.wood) this.text(L + 290, y + 12, `${q.wood} WOOD (${q.fromHold} OWN, ${q.bought} BOUGHT)`).setAlpha(0.8);
+            if (q.wood) {
+                const parts = [q.fromStorage && `${q.fromStorage} FROM STORAGE`, q.fromHold && `${q.fromHold} FROM HOLD`, q.bought && `${q.bought} BOUGHT`].filter(Boolean);
+                this.text(L + 62, y + 22, `NEEDS ${q.wood} WOOD: ${parts.join(' + ')}`).setAlpha(0.75);
+            }
             if (ship.status === 'repair') {
                 const left = Math.max(0, Math.ceil(((ship.repairUntil ?? 0) - Date.now()) / 1000));
                 this.text(L + 540, y + 6, `UNDER REPAIR ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`, Fonts.Ink, 1, 0.5);
@@ -222,7 +258,7 @@ export class PortScene extends Scene {
             const up = Object.values(ship.upgrades).reduce((a, b) => a + b, 0);
             this.shipIcon(L + 26, y + 6, ship, true);
             this.text(L + 62, y, `${ship.name} (${SHIP_CLASSES[ship.cls].name}) - SUNK`, Fonts.Red);
-            this.text(L + 62, y + 12, `UPGRADES KEPT: ${up}   SAVED CARGO: ${ship.protectedCargo.length}   RETURNS AT 35% HULL`);
+            this.text(L + 62, y + 12, `UPGRADES KEPT: ${up}   SAVED CARGO: ${ship.protectedCargo.length}   RETURNS FULLY REPAIRED`);
             this.button(L + 560, y + 6, free ? 'FREE TOW' : `RECOVER ${cost}G`, () => this.act(s.recover(ship), `${ship.name} RECOVERED`, `NOT ENOUGH GOLD (NEED ${cost})`), free || s.gold >= cost, 130);
             y += 32;
         }
@@ -240,7 +276,7 @@ export class PortScene extends Scene {
         const st = s.stats;
         const cap = tierOf(this.port).upgradeCap;
         this.text(L, y, `${ship.name} REFIT`, Fonts.Ink, 2);
-        this.text(L + 250, y, `SPEED ${st.maxSpeed}/${SPEED_CAP}  TURN ${st.turnRate.toFixed(2)}  HULL ${st.maxHp}  HOLD ${st.cargo}  GUNS ${st.cannons}x${st.cannonDamage.toFixed(1)}`);
+        this.text(L + 250, y, `SPEED ${st.maxSpeed}/${speedCapOf(ship.cls)}  TURN ${st.turnRate.toFixed(2)}  HULL ${st.maxHp}  HOLD ${st.cargo}  GUNS ${st.cannons}${st.bowGuns ? '+BOW' : ''}${st.sternGuns ? '+STERN' : ''} x${st.cannonDamage.toFixed(1)}`);
         y += 24;
         for (const id of UPGRADE_ORDER) {
             const def = UPGRADES[id];
@@ -251,7 +287,15 @@ export class PortScene extends Scene {
                 this.content.add(this.add.rectangle(L + 74 + i * 13, y, 9, 8, i < lvl ? Palette.gold : i < cap[id] ? Palette.sailShade : 0x9a8c78).setStrokeStyle(1, Palette.woodDeep));
             }
             const mats = upgradeMaterials(id, lvl);
-            this.text(L + 134, y - 5, `TIER ${lvl}/${def.maxLevel}  NEXT: ${def.effect}`);
+            const stern = SHIP_CLASSES[ship.cls].sternGun;
+            const bonus = id === 'cannons' && lvl === BOW_GUN_TIER - 1 ? ' + BOW GUN' : id === 'cannons' && lvl === STERN_GUN_TIER - 1 && stern ? ' + STERN GUN' : '';
+            // Sails: show this class's real speed gain (the sloop gains more and can reach shark speed).
+            let effect = def.effect;
+            if (id === 'sails' && lvl < def.maxLevel) {
+                const gain = computeStats(ship.cls, { ...ship.upgrades, sails: lvl + 1 }).maxSpeed - st.maxSpeed;
+                effect = `+${gain} SPEED${lvl + 1 === def.maxLevel ? ` (TOP ${st.maxSpeed + gain})` : ''}, +8% ACCEL`;
+            }
+            this.text(L + 134, y - 5, `TIER ${lvl}/${def.maxLevel}  NEXT: ${effect}${bonus}`);
             if (cost !== null) this.text(L + 134, y + 6, `NEEDS ${cost}G + ${formatMaterials(mats)}`).setAlpha(0.75);
             if (cost === null) this.text(L + 580, y, 'MAXED', Fonts.Ink, 1, 0.5);
             else if (lvl >= cap[id]) {
@@ -259,11 +303,13 @@ export class PortScene extends Scene {
                 this.text(L + 580, y, where ? `TIER ${where.tier}+ PORT NEEDED` : 'NOT SOLD HERE', Fonts.Ink, 1, 0.5).setAlpha(0.65);
             } else {
                 const short = s.missingMaterials(mats);
-                this.button(L + 580, y, short ? `NEED ${short}` : `BUY ${cost}G`, () => this.act(s.buyUpgrade(id, this.port), `${def.name} UPGRADED TO TIER ${lvl + 1}`, short ? `MISSING ${short} - BUY OR SALVAGE IT` : `NOT ENOUGH GOLD (NEED ${cost})`), !short && s.gold >= cost, 130);
+                this.button(L + 580, y, short ? `NEED ${short}` : `BUY ${cost}G`, () => this.act(s.buyUpgrade(id, this.port), `${def.name} UPGRADED TO TIER ${lvl + 1}`, short ? `MISSING ${short} (HOLD + STORAGE) - BUY OR SALVAGE IT` : `NOT ENOUGH GOLD (NEED ${cost})`), !short && s.gold >= cost, 130);
             }
             y += 34;
         }
-        this.text(L, y - 6, 'UPGRADES ARE PERMANENT AND STAY WITH THE SHIP - EVEN IF IT SINKS. SPEED NEVER EXCEEDS 84.').setAlpha(0.7);
+        this.text(L, y - 6, `UPGRADES ARE PERMANENT AND STAY WITH THE SHIP - EVEN IF IT SINKS. ${SHIP_CLASSES[ship.cls].name} TOP SPEED: ${speedCapOf(ship.cls)}.`).setAlpha(0.7);
+        const have = MATERIALS.map((m) => `${m.toUpperCase()} ${countOf(s.storage, m)}+${s.materialCount(m)}`).join('    ');
+        this.text(L, y + 8, `MATERIALS (STORED + HOLD, STORAGE USED FIRST):   ${have}`).setAlpha(0.85);
     }
 
     private renderTrading(): void {
@@ -367,35 +413,73 @@ export class PortScene extends Scene {
         const L = this.L;
         let y = this.T;
         this.text(L, y, `FLEET MANAGER - ${s.ships.length} SHIPS   ESCORTS ${s.escorts.length}/${s.escortSlots} (MORE AT CAPTAIN LV 2/4/6)`, Fonts.Ink, 1);
-        // Formation picker.
-        (['line', 'wedge', 'flank'] as Formation[]).forEach((f, i) => {
-            this.button(L + 470 + i * 78, y, f.toUpperCase(), () => {
+        // Formation picker: a small chart of each formation (gold = flagship, green = escorts) next to its button.
+        const fy = y + 32;
+        this.text(L, fy, 'FORMATION', Fonts.Ink, 1);
+        // Three equal columns across the panel; in each, the chart then a 14px gap then its button.
+        const colStart = L + 80;
+        const colW = (L + 688 - colStart) / FORMATION_ORDER.length;
+        FORMATION_ORDER.forEach((f, i) => {
+            const gc = colStart + colW * (i + 0.5);
+            const pick = () => {
                 s.setFormation(f);
                 this.act(true, `FORMATION: ${f.toUpperCase()}`, '');
-            }, s.formation !== f, 72);
+            };
+            const icon = this.add.image(gc - 45, fy, formationIcon(this, f, s.formation === f)).setScale(PIXEL_SCALE);
+            icon.setInteractive({ useHandCursor: true }).on('pointerup', pick);
+            this.content.add(icon);
+            this.button(gc + 32, fy, s.formation === f ? `${f.toUpperCase()} *` : f.toUpperCase(), pick, s.formation !== f, 76);
         });
-        y += 22;
-        for (const ship of s.ships.slice(0, 7)) {
+        // Ship rows share the space down to the pager evenly (never cramped, never too far apart).
+        const rowsTop = fy + 32;
+        const rowsBottom = this.top + PANEL_H - 62;
+        // Every owned ship is listed, FLEET_PAGE at a time.
+        const pages = Math.max(1, Math.ceil(s.ships.length / FLEET_PAGE));
+        this.fleetPage = Math.min(this.fleetPage, pages - 1);
+        if (pages > 1) {
+            const py = this.top + PANEL_H - 50;
+            const px = this.left + PANEL_W - 70;
+            this.text(px - 52, py, `PAGE ${this.fleetPage + 1}/${pages}`, Fonts.Ink, 1, 0.5);
+            this.button(px, py, '<', () => ((this.fleetPage = Math.max(0, this.fleetPage - 1)), this.render()), this.fleetPage > 0, 36);
+            this.button(px + 42, py, '>', () => ((this.fleetPage = Math.min(pages - 1, this.fleetPage + 1)), this.render()), this.fleetPage < pages - 1, 36);
+        }
+        const shown = s.ships.slice(this.fleetPage * FLEET_PAGE, (this.fleetPage + 1) * FLEET_PAGE);
+        const gap = Math.max(34, Math.min(52, (rowsBottom - rowsTop) / Math.max(1, shown.length)));
+        shown.forEach((ship, i) => {
+            y = rowsTop + gap * (i + 0.5) - 3;
             const st = s.statsOf(ship);
             const sunk = ship.status === 'sunk';
             this.shipIcon(L + 24, y + 4, ship, sunk || ship.status === 'repair');
-            this.text(L + 58, y - 3, `${ship.name}  ${SHIP_CLASSES[ship.cls].name}`);
+            // Name: click to rename. While typing, it shows in a highlighted field with a cursor.
+            const typing = this.renaming?.id === ship.id;
+            const nameW = (SHIP_NAME_MAX + 1) * 6 + 4;
+            if (typing) {
+                this.content.add(this.add.rectangle(L + 55, y - 3, nameW, 11, Palette.sail).setOrigin(0, 0.5).setStrokeStyle(1, Palette.gold));
+                this.text(L + 58, y - 3, `${this.renaming!.text}_`);
+                this.text(L + 58 + nameW + 4, y - 3, SHIP_CLASSES[ship.cls].name).setAlpha(0.8);
+            } else {
+                const label = this.text(L + 58, y - 3, `${ship.name}  ${SHIP_CLASSES[ship.cls].name}`);
+                label.setInteractive({ useHandCursor: true }).on('pointerup', () => this.startRename(ship));
+                label.on('pointerover', () => label.setAlpha(0.6)).on('pointerout', () => label.setAlpha(1));
+            }
             const label = { active: 'FLAGSHIP', stored: 'STORED', escort: 'ESCORT', sunk: 'SUNK', repair: 'UNDER REPAIR' }[ship.status];
             const font = ship.status === 'sunk' ? Fonts.Red : ship.status === 'active' || ship.status === 'escort' ? Fonts.Green : Fonts.Ink;
             this.text(L + 250, y - 3, `${label}${!sunk && ship.hp < st.maxHp ? ' - DAMAGED' : ''}`, font);
             const u = ship.upgrades;
-            this.text(L + 58, y + 8, `HULL ${Math.ceil(ship.hp)}/${st.maxHp} CARGO ${ship.cargo.length}/${st.cargo} SPD ${st.maxSpeed} GUNS ${st.cannons}  UPG H${u.hull} C${u.cannons} S${u.sails} R${u.rudder} K${u.cargo} P${u.harpoons}`);
-            const bx = L + 468;
-            if (ship.status === 'stored') {
-                this.button(bx, y + 3, 'FLAGSHIP', () => this.act(s.makeFlagship(ship), `${ship.name} IS NOW YOUR FLAGSHIP`, 'CANNOT'), true, 74);
-                this.button(bx + 80, y + 3, 'ESCORT', () => this.act(s.deployEscort(ship), `${ship.name} WILL SAIL AS ESCORT`, s.escorts.length >= s.escortSlots ? 'NO FREE ESCORT SLOTS (LEVEL UP)' : 'SHIP MUST BE AFLOAT'), s.escorts.length < s.escortSlots, 66);
-                if (ship.cargo.length) this.button(bx + 152, y + 3, 'CARGO>', () => this.act(s.transferCargoToFlagship(ship) > 0, 'CARGO MOVED TO FLAGSHIP', 'FLAGSHIP HOLD IS FULL'), s.seaworthy, 60);
-            } else if (ship.status === 'escort') {
-                this.button(bx, y + 3, 'STORE', () => this.act(s.storeShip(ship), `${ship.name} RECALLED TO PORT`, 'CANNOT'), true, 74);
-            } else if (sunk) this.button(bx, y + 3, 'RECOVERY', () => this.show('repair'), true, 74);
-            y += 32;
-        }
-        this.text(L, this.top + PANEL_H - 32, 'ESCORTS FOLLOW YOUR FLAGSHIP AND FIGHT PIRATES AND MONSTERS. SUNK ESCORTS CAN BE RECOVERED HERE.').setAlpha(0.7);
+            this.text(L + 58, y + 8, `HULL ${Math.ceil(ship.hp)}/${st.maxHp} CARGO ${ship.cargo.length}/${st.cargo} SPD ${st.maxSpeed} GUNS ${st.cannons + st.bowGuns + st.sternGuns}  UPG H${u.hull} C${u.cannons} S${u.sails} R${u.rudder} K${u.cargo} P${u.harpoons}`);
+            // Every afloat ship gets the same three choices; the one it's already doing is greyed out.
+            const by = y + 3;
+            if (ship.status === 'active' || ship.status === 'stored' || ship.status === 'escort') {
+                const inUse = ship.status === 'active';
+                // Buttons sit 8px apart, ending at the panel's right edge.
+                this.button(L + 469, by, inUse ? 'IN USE' : 'USE SHIP', () => this.act(s.makeFlagship(ship), `NOW SAILING ${ship.name}`, 'CANNOT'), !inUse, 66);
+                const slotsFull = s.escorts.length >= s.escortSlots;
+                this.button(L + 539, by, 'ESCORT', () => this.act(s.deployEscort(ship), `${ship.name} WILL SAIL AS ESCORT`, slotsFull ? 'NO FREE ESCORT SLOTS (LEVEL UP)' : 'SHIP MUST BE AFLOAT'), ship.status === 'stored' && ship.hp > 0 && !slotsFull, 58);
+                this.button(L + 602, by, 'STORE', () => this.act(s.storeShip(ship), `${ship.name} STORED AT PORT`, 'CANNOT'), ship.status === 'escort', 52);
+                if (ship.status === 'stored' && ship.cargo.length) this.button(L + 662, by, 'CARGO>', () => this.act(s.transferCargoToFlagship(ship) > 0, 'CARGO MOVED TO FLAGSHIP', 'FLAGSHIP HOLD IS FULL'), s.seaworthy, 52);
+            } else if (sunk) this.button(L + 469, by, 'RECOVERY', () => this.show('repair'), true, 66);
+        });
+        this.text(L, this.top + PANEL_H - 32, 'CLICK A SHIP\'S NAME TO RENAME IT.  ESCORTS FOLLOW YOUR FLAGSHIP AND FIGHT PIRATES AND MONSTERS.').setAlpha(0.7);
     }
 
     private renderShipyard(): void {
@@ -421,11 +505,24 @@ export class PortScene extends Scene {
             this.text(cx, y + 6, `ABILITY: ${def.ability.name}`, Fonts.Ink, 1, 0.5);
             this.text(cx, y + 18, `OWNED: ${owned}   NEEDS LV ${def.requiredLevel}`, Fonts.Ink, 1, 0.5).setAlpha(0.75);
             const lvlOk = s.level >= def.requiredLevel;
-            this.button(cx, y + 40, lvlOk ? `BUY ${def.price}G` : `LEVEL ${def.requiredLevel}`, () => {
+            const maxed = s.canBuyShips;
+            this.button(cx, y + 40, !maxed ? 'UPGRADE FIRST' : lvlOk ? `BUY ${def.price}G` : `LEVEL ${def.requiredLevel}`, () => {
                 const ship = s.buyShip(cls);
                 this.act(!!ship, `${ship?.name} JOINS YOUR FLEET - SEE FLEET TAB`, `NOT ENOUGH GOLD (NEED ${def.price})`);
-            }, lvlOk && s.gold >= def.price, 124);
+            }, maxed && lvlOk && s.gold >= def.price, 124);
         });
+
+        // New ships are earned by maxing out the ones you have.
+        const total = UPGRADE_ORDER.reduce((n, id) => n + UPGRADES[id].maxLevel, 0);
+        const behind = s.shipsNotMaxed;
+        if (behind.length) {
+            const list = behind
+                .slice(0, 3)
+                .map((sh) => `${sh.name} ${UPGRADE_ORDER.reduce((n, id) => n + sh.upgrades[id], 0)}/${total}`)
+                .join(', ');
+            this.text(this.L, this.top + PANEL_H - 44, 'TO BUY A NEW SHIP, EVERY SHIP YOU OWN MUST BE FULLY UPGRADED.', Fonts.Red);
+            this.text(this.L, this.top + PANEL_H - 32, `STILL TO UPGRADE: ${list}${behind.length > 3 ? ` +${behind.length - 3} MORE` : ''}`);
+        } else this.text(this.L, this.top + PANEL_H - 32, 'YOUR WHOLE FLEET IS FULLY UPGRADED - YOU CAN BUY A NEW SHIP.', Fonts.Green);
     }
 
     private leave(): void {

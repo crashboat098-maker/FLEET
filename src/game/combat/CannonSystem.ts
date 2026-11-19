@@ -102,6 +102,30 @@ export class CannonSystem {
         }
     }
 
+    /** Fire the bow chaser (end = 1, straight ahead) or stern chaser (end = -1, straight behind). */
+    fireChaser(shooter: Combatant, end: 1 | -1, damage: number): void {
+        const fx = Math.sin(shooter.heading) * end;
+        const fy = -Math.cos(shooter.heading) * end;
+        const px = shooter.x + fx * (shooter.halfLen + 3);
+        const py = shooter.y + fy * (shooter.halfLen + 3);
+        const spread = (Math.random() - 0.5) * 0.08;
+        const dx = fx * Math.cos(spread) - fy * Math.sin(spread);
+        const dy = fx * Math.sin(spread) + fy * Math.cos(spread);
+        const b = this.ball();
+        b.x = px;
+        b.y = py;
+        b.vx = dx * CANNON_SPEED + shooter.vx;
+        b.vy = dy * CANNON_SPEED + shooter.vy;
+        b.life = (CANNON_RANGE / CANNON_SPEED) * (0.92 + Math.random() * 0.16) * 1000;
+        b.damage = damage;
+        b.shooter = shooter;
+        b.active = true;
+        b.img.setVisible(true).setPosition(px, py);
+        const flash = this.scene.add.image(px, py, CombatTextures.Flash).setScale(PIXEL_SCALE).setDepth(Depth.Ship + 4);
+        this.scene.time.delayedCall(70, () => flash.destroy());
+        this.smoke.emitParticleAt(px + fx * 4, py + fy * 4, 3);
+    }
+
     update(deltaMs: number): void {
         const dt = deltaMs / 1000;
         for (const b of this.balls) {
@@ -118,7 +142,8 @@ export class CannonSystem {
             // Hits are checked before land so shore targets (archers) can be struck.
             let hitSomething = false;
             for (const c of this.combat.near(b.x, b.y, 140)) {
-                if (c === b.shooter || c.faction === b.shooter.faction) continue;
+                // Friendly fire is off: balls pass through ships on the shooter's side (your flagship and escorts).
+                if (c === b.shooter || c.faction === b.shooter.faction || c.submerged) continue;
                 if (hullDistance(c, b.x, b.y) > c.beam + 3) continue;
                 const mult = c.kind === 'creature' ? (b.shooter.creatureMult ?? 1) : 1;
                 c.takeHit(b.damage * mult, 'cannonball', b.shooter);

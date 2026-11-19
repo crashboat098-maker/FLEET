@@ -64,6 +64,19 @@ export const STARTING_GOLD = 100;
 const NAME_A = ['SEA', 'SALT', 'GOLDEN', 'STORM', 'SILVER', 'CRIMSON', 'GHOST', 'LUCKY', 'IRON', 'CORAL', 'TIDE', 'BRASS', 'EMERALD', 'MIDNIGHT', 'SUNNY', 'WILD'];
 const NAME_B = ['SPARROW', 'GULL', 'MAIDEN', 'RAVEN', 'DOLPHIN', 'TERN', 'ROVER', 'WIND', 'FANG', 'PEARL', 'MARLIN', 'HERON', 'SERPENT', 'COMET', 'PETREL', 'ALBATROSS'];
 
+/** Longest ship name a captain can type. */
+export const SHIP_NAME_MAX = 18;
+
+/** Upper-case, letters/digits/space/'/- only, single spaces, trimmed, at most SHIP_NAME_MAX. */
+export const cleanShipName = (raw: string): string =>
+    raw
+        .toUpperCase()
+        .replace(/[^A-Z0-9 '-]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, SHIP_NAME_MAX)
+        .trim();
+
 export const randomShipName = (): string =>
     `${NAME_A[Math.floor(Math.random() * NAME_A.length)]} ${NAME_B[Math.floor(Math.random() * NAME_B.length)]}`;
 

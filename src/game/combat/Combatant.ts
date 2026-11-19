@@ -33,6 +33,8 @@ export interface Combatant {
     readonly cls?: ShipClassId;
     /** Damage multiplier this attacker has against creatures (harpoons). */
     readonly creatureMult?: number;
+    /** Underwater (diving sharks): cannonballs pass over it and nothing targets it. */
+    readonly submerged?: boolean;
     takeHit(damage: number, source: DamageSource, from: Combatant | null): void;
     /** Push the body (collision separation). */
     nudge(dx: number, dy: number): void;
@@ -103,7 +105,7 @@ export class CombatWorld {
         let best: Combatant | null = null;
         let bestD = r * r;
         for (const c of this.list) {
-            if (!c.alive || !isHostile(faction, c.faction) || isProtected(c) || (filter && !filter(c))) continue;
+            if (!c.alive || c.submerged || !isHostile(faction, c.faction) || isProtected(c) || (filter && !filter(c))) continue;
             const d = (c.x - x) ** 2 + (c.y - y) ** 2;
             if (d < bestD) {
                 bestD = d;
@@ -160,6 +162,8 @@ export class CombatWorld {
                 // Only deliberate rams hurt: the player, or a ship hostile to its victim.
                 // Accidental bumps from peaceful traffic just push apart.
                 if (atk.faction !== 'player' && !isHostile(atk.faction, def.faction)) continue;
+                // Your own ships (flagship and escorts) never hurt each other — they just push apart.
+                if (atk.faction === def.faction) continue;
                 // No fighting in a safe harbour, from either side.
                 if (isProtected(atk) || isProtected(def)) continue;
                 const r = resolveRam(atk.cls ?? 'sloop', def.cls ?? 'sloop', closing);

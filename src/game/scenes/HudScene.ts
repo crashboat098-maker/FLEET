@@ -1,9 +1,10 @@
 import { GameObjects, Input, Scene } from 'phaser';
 import { GAME_HEIGHT, GAME_TITLE, GAME_WIDTH, SceneKeys } from '../config/constants';
 import { Palette } from '../config/palette';
-import { Fonts, pixelText } from '../gfx/pixelFont';
+import { FontKey, Fonts, pixelText } from '../gfx/pixelFont';
 import type { MapMarker } from '../ai/Director';
 import { SHIP_CLASSES } from '../ships/shipClasses';
+import type { GunPosition } from '../entities/PlayerShip';
 import { PlayerState, StateEvents } from '../state/PlayerState';
 import { hudPanel } from '../ui/panels';
 import { PixelButton } from '../ui/PixelButton';
@@ -11,13 +12,18 @@ import { REGIONS, RegionId } from '../world/regions';
 import { MINIMAP_SIZE } from '../world/terrainTextures';
 import { WorldData } from '../world/WorldGenerator';
 
+/** Ships per page in the read-only fleet overview (TAB). */
+const FLEET_PAGE = 10;
+
 /** What the HUD needs to know about the flagship each frame. */
 export interface HudShipView {
     x: number;
     y: number;
     abilityStatus(): { text: string; ready: boolean };
-    /** 0..1 reload progress (1 = ready) for port (-1) and starboard (1). */
-    reload(side: -1 | 1): number;
+    /** 0..1 reload progress (1 = ready) for port (-1), starboard (1), bow or stern. */
+    reload(gun: GunPosition): number;
+    /** Which chaser guns the flagship has (from Cannons upgrades). */
+    chasers(): { bow: boolean; stern: boolean };
 }
 
 export interface HudSceneData {
@@ -51,7 +57,10 @@ export class HudScene extends Scene {
     private progressBg!: GameObjects.Rectangle;
     private abilityName!: GameObjects.BitmapText;
     private abilityStatus!: GameObjects.BitmapText;
-    private reloadBars: { port: GameObjects.Rectangle; starboard: GameObjects.Rectangle } = {} as never;
+    private reloadBars: Record<'port' | 'starboard' | 'bow' | 'stern', GameObjects.Rectangle> = {} as never;
+    /** Bow / stern rows (shown once the flagship has those guns). */
+    private chaserRows: Record<'bow' | 'stern', GameObjects.GameObject[]> = { bow: [], stern: [] };
+    private chaserPanel!: GameObjects.Image;
     private mapDot!: GameObjects.Rectangle;
     private markerPool: GameObjects.Rectangle[] = [];
     private mapOrigin = { x: 0, y: 0 };
@@ -64,6 +73,7 @@ export class HudScene extends Scene {
     private bossName!: GameObjects.BitmapText;
     private bossBar!: GameObjects.Rectangle;
     private fleetPanel!: GameObjects.Container;
+    private fleetPage = 0;
     private elapsed = 0;
     private markerTimer = 0;
     private rewardY = 0;
@@ -128,6 +138,16 @@ export class HudScene extends Scene {
             this.add.rectangle(wx - 22, y, 74, 5, Palette.shadow).setOrigin(0, 0.5).setStrokeStyle(1, Palette.woodDeep);
             this.reloadBars[side] = this.add.rectangle(wx - 22, y, 74, 5, Palette.gold).setOrigin(0, 0.5);
         }
+        // Bow / stern chasers sit in a panel just above, shown once unlocked.
+        const cy = wy - 38;
+        this.chaserPanel = this.add.image(wx, cy, hudPanel(this, 120, 36)).setVisible(false);
+        for (const [gun, y, label] of [['bow', cy - 7, 'BOW'], ['stern', cy + 7, 'STRN']] as const) {
+            const t = pixelText(this, wx - 52, y, label, Fonts.Cream).setOrigin(0, 0.5);
+            const bg = this.add.rectangle(wx - 22, y, 74, 5, Palette.shadow).setOrigin(0, 0.5).setStrokeStyle(1, Palette.woodDeep);
+            this.reloadBars[gun] = this.add.rectangle(wx - 22, y, 74, 5, Palette.gold).setOrigin(0, 0.5);
+            this.chaserRows[gun] = [t, bg, this.reloadBars[gun]];
+            this.chaserRows[gun].forEach((o) => (o as GameObjects.Image).setVisible(false));
+        }
         const ax = GAME_WIDTH - 72;
         const abilityBg = this.add.image(ax, wy, hudPanel(this, 136, 36));
         abilityBg.setInteractive({ useHandCursor: true }).on('pointerup', () => state.emit(StateEvents.AbilityRequest));
@@ -135,9 +155,9 @@ export class HudScene extends Scene {
         this.abilityStatus = pixelText(this, ax, wy + 6, '', Fonts.Cream);
 
         // --- Control hints (bottom-left, two lines)
-        const h1 = 'WASD/CLICK: SAIL   Z/C OR RIGHT-CLICK: FIRE   Q: ABILITY';
-        const h2 = 'E: DOCK   F: FORMATION   TAB: FLEET   ESC: MENU';
-        this.add.image(4, GAME_HEIGHT - 28, hudPanel(this, h1.length * 6 + 10, 24)).setOrigin(0).setAlpha(0.85);
+        const h1 = 'WASD/CLICK: SAIL   Z/C: BROADSIDES   X/V: BOW/STERN   Q: ABILITY';
+        const h2 = 'RIGHT-CLICK: FIRE AT CURSOR   E: DOCK   F: FORMATION   TAB: FLEET   ESC: MENU';
+        this.add.image(4, GAME_HEIGHT - 28, hudPanel(this, Math.max(h1.length, h2.length) * 6 + 10, 24)).setOrigin(0).setAlpha(0.85);
         pixelText(this, 9, GAME_HEIGHT - 25, h1, Fonts.Cream).setOrigin(0);
         pixelText(this, 9, GAME_HEIGHT - 15, h2, Fonts.Cream).setOrigin(0);
 
@@ -277,8 +297,14 @@ export class HudScene extends Scene {
 
     // ------------------------------------------------------------- fleet
 
+    /** TAB opens the overview, then flips through its pages, then closes it. */
     private toggleFleet(): void {
-        this.fleetPanel.setVisible(!this.fleetPanel.visible);
+        const pages = Math.max(1, Math.ceil(this.data_.state.ships.length / FLEET_PAGE));
+        if (!this.fleetPanel.visible) {
+            this.fleetPage = 0;
+            this.fleetPanel.setVisible(true);
+        } else if (this.fleetPage < pages - 1) this.fleetPage++;
+        else this.fleetPanel.setVisible(false);
         if (this.fleetPanel.visible) this.buildFleet();
     }
 
@@ -286,25 +312,40 @@ export class HudScene extends Scene {
     private buildFleet(): void {
         const s = this.data_.state;
         this.fleetPanel.removeAll(true);
-        const ships = s.ships.slice(0, 10);
-        const w = 380;
-        const h = 44 + ships.length * 14;
+        const pages = Math.max(1, Math.ceil(s.ships.length / FLEET_PAGE));
+        this.fleetPage = Math.min(this.fleetPage, pages - 1);
+        const ships = s.ships.slice(this.fleetPage * FLEET_PAGE, (this.fleetPage + 1) * FLEET_PAGE);
+        const w = 500;
+        const h = 58 + Math.max(1, ships.length) * 14;
         const x0 = GAME_WIDTH / 2 - w / 2;
-        const y0 = 120;
+        const y0 = 110;
+        const add = (x: number, y: number, t: string, f: FontKey = Fonts.Cream, originX = 0) => this.fleetPanel.add(pixelText(this, x, y, t, f).setOrigin(originX, 0.5));
         this.fleetPanel.add(this.add.image(x0, y0, hudPanel(this, w, h)).setOrigin(0));
-        this.fleetPanel.add(pixelText(this, GAME_WIDTH / 2, y0 + 12, 'YOUR FLEET (READ-ONLY - MANAGE AT PORTS)', Fonts.Gold));
+        this.fleetPanel.add(pixelText(this, GAME_WIDTH / 2, y0 + 12, `YOUR FLEET - ${s.ships.length} SHIP${s.ships.length === 1 ? '' : 'S'} (READ-ONLY - MANAGE AT PORTS)`, Fonts.Gold));
+        const hy = y0 + 28;
+        [['SHIP', 10], ['CLASS', 130], ['STATUS', 200], ['CARGO', 336], ['UPG', 400]].forEach(([t, x]) => this.fleetPanel.add(pixelText(this, x0 + (x as number), hy, t as string, Fonts.Gold).setOrigin(0, 0.5).setAlpha(0.7)));
+        add(x0 + w - 10, hy, 'HULL', Fonts.Gold, 1);
+        if (!ships.length) add(x0 + 10, y0 + 42, 'NO SHIPS YET - CHOOSE ONE AT PORT');
         const font = { active: Fonts.Green, escort: Fonts.Green, sunk: Fonts.Red, stored: Fonts.Cream, repair: Fonts.Gold } as const;
         ships.forEach((sh, i) => {
-            const y = y0 + 30 + i * 14;
+            const y = y0 + 42 + i * 14;
             const st = s.statsOf(sh);
-            const status = sh.status === 'active' ? 'FLAGSHIP' : sh.status === 'repair' ? 'UNDER REPAIR' : sh.status.toUpperCase();
-            const dmg = sh.status !== 'sunk' && sh.hp < st.maxHp ? ' DAMAGED' : '';
-            this.fleetPanel.add(pixelText(this, x0 + 10, y, `${sh.name}`, Fonts.Cream).setOrigin(0, 0.5));
+            let status = sh.status === 'active' ? 'FLAGSHIP' : sh.status === 'repair' ? 'DRY DOCK' : sh.status.toUpperCase();
+            if (sh.status === 'repair') {
+                const left = Math.max(0, Math.ceil(((sh.repairUntil ?? 0) - Date.now()) / 1000));
+                status += ` ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`;
+            }
+            const dmg = sh.status !== 'sunk' && sh.status !== 'repair' && sh.hp < st.maxHp ? ' DAMAGED' : '';
+            const upgrades = Object.values(sh.upgrades).reduce((a, b) => a + b, 0);
+            add(x0 + 10, y, sh.name);
             this.fleetPanel.add(pixelText(this, x0 + 130, y, SHIP_CLASSES[sh.cls].name, Fonts.Cream).setOrigin(0, 0.5).setAlpha(0.8));
-            this.fleetPanel.add(pixelText(this, x0 + 210, y, `${status}${dmg}`, font[sh.status]).setOrigin(0, 0.5));
-            this.fleetPanel.add(pixelText(this, x0 + w - 10, y, `${Math.ceil(sh.hp)}/${st.maxHp}`, Fonts.Cream).setOrigin(1, 0.5));
+            add(x0 + 200, y, `${status}${dmg}`, font[sh.status]);
+            add(x0 + 336, y, `${sh.cargo.length + sh.protectedCargo.length}/${st.cargo}`);
+            add(x0 + 400, y, `${upgrades}`);
+            add(x0 + w - 10, y, `${Math.ceil(sh.hp)}/${st.maxHp}`, Fonts.Cream, 1);
         });
-        this.fleetPanel.add(pixelText(this, GAME_WIDTH / 2, y0 + h - 8, 'TAB TO CLOSE', Fonts.Cream).setAlpha(0.6));
+        const foot = pages > 1 ? `PAGE ${this.fleetPage + 1}/${pages} - TAB: ${this.fleetPage < pages - 1 ? 'NEXT PAGE' : 'CLOSE'}` : 'TAB TO CLOSE';
+        this.fleetPanel.add(pixelText(this, GAME_WIDTH / 2, y0 + h - 8, foot, Fonts.Cream).setAlpha(0.6));
     }
 
     // ------------------------------------------------------------- update
@@ -318,8 +359,12 @@ export class HudScene extends Scene {
             this.mapDot.setVisible(Math.floor(this.elapsed / 400) % 3 !== 0);
             const st = ship.abilityStatus();
             this.abilityStatus.setText(st.text).setFont(st.ready ? Fonts.Green : Fonts.Cream);
-            for (const [side, key] of [[-1, 'port'], [1, 'starboard']] as const) {
-                const r = ship.reload(side);
+            const has = ship.chasers();
+            this.chaserPanel.setVisible(has.bow || has.stern);
+            (['bow', 'stern'] as const).forEach((g) => this.chaserRows[g].forEach((o) => (o as GameObjects.Image).setVisible(has[g])));
+            for (const [gun, key] of [[-1, 'port'], [1, 'starboard'], ['bow', 'bow'], ['stern', 'stern']] as const) {
+                if ((key === 'bow' || key === 'stern') && !has[key]) continue;
+                const r = ship.reload(gun);
                 this.reloadBars[key].width = Math.max(1, 74 * r);
                 this.reloadBars[key].fillColor = r >= 1 ? 0x8fe07a : Palette.gold;
             }

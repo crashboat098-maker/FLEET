@@ -7,11 +7,12 @@ import { CombatWorld, inSafeHarbour, setSafeHarbours } from '../combat/Combatant
 import { Kraken, Serpent, Shark } from '../creatures/Creatures';
 import { Fonts, pixelText } from '../gfx/pixelFont';
 import { CollectibleSystem } from '../entities/CollectibleSystem';
-import { PlayerShip } from '../entities/PlayerShip';
+import { GunPosition, PlayerShip } from '../entities/PlayerShip';
 import { createShip, Formation, loadProfile, newProfile, Profile } from '../ships/profile';
-import { SHIP_CLASSES } from '../ships/shipClasses';
+import { BOW_GUN_TIER, SHIP_CLASSES, STERN_GUN_TIER, UPGRADE_ORDER, UPGRADES } from '../ships/shipClasses';
 import { ItemType } from '../state/items';
 import { PlayerState, StateEvents } from '../state/PlayerState';
+import { MAX_LEVEL, xpToNext } from '../state/progression';
 import { CollisionWorld } from '../world/CollisionWorld';
 import { OceanLayer } from '../world/OceanLayer';
 import { PortSystem } from '../world/PortSystem';
@@ -48,6 +49,8 @@ const IMPACT_DAMAGE_PER_SPEED = 0.55;
 /** Boiling water near lava flows (HP per second). */
 const HAZARD_DPS = 7;
 const FORMATIONS: Formation[] = ['line', 'wedge', 'flank'];
+/** Right-click within this angle of dead ahead / astern fires the bow / stern gun. */
+const CHASER_ARC = 0.6;
 
 const lerpColor = (a: number, b: number, t: number) => {
     const c = Display.Color.Interpolate.ColorWithColor(Display.Color.IntegerToColor(a), Display.Color.IntegerToColor(b), 100, t * 100);
@@ -82,7 +85,7 @@ export class OceanScene extends Scene {
     private reefs: Circle[] = [];
     private action: (() => void) | null = null;
     private hazards: Circle[] = [];
-    private keys!: Record<'dock' | 'ability' | 'port' | 'starboard' | 'formation', Input.Keyboard.Key>;
+    private keys!: Record<'dock' | 'ability' | 'port' | 'starboard' | 'bow' | 'stern' | 'formation', Input.Keyboard.Key>;
     private targetMarker!: GameObjects.Image;
     private haze!: GameObjects.Rectangle;
     private region: RegionId | null = null;
@@ -199,6 +202,8 @@ export class OceanScene extends Scene {
             ability: kb.addKey(K.Q),
             port: kb.addKey(K.Z),
             starboard: kb.addKey(K.C),
+            bow: kb.addKey(K.X),
+            stern: kb.addKey(K.V),
             formation: kb.addKey(K.F)
         };
         kb.addCapture([K.TAB]);
@@ -256,6 +261,44 @@ export class OceanScene extends Scene {
                 director: this.director,
                 combat: this.combat,
                 damage: (n: number) => st.damage(n, 'cannonball'),
+                /** Testing: add gold, e.g. fleet.gold(100000). */
+                gold: (n = 100000) => {
+                    st.profile.gold += Math.floor(n);
+                    st.commit();
+                    st.toast(`DEV: +${Math.floor(n)} GOLD`);
+                    return st.gold;
+                },
+                /** Testing: set the captain level, e.g. fleet.level(7). */
+                level: (lvl: number) => {
+                    let xp = 0;
+                    for (let l = 1; l < Math.min(MAX_LEVEL, Math.max(1, lvl)); l++) xp += xpToNext(l);
+                    st.profile.xp = Math.max(st.profile.xp, xp);
+                    st.commit();
+                    st.toast(`DEV: CAPTAIN LEVEL ${st.level}`);
+                    return st.level;
+                },
+                /** Testing: fully upgrade every owned ship, e.g. fleet.maxUpgrades(). */
+                maxUpgrades: () => {
+                    for (const sh of st.ships) {
+                        const before = st.statsOf(sh).maxHp;
+                        for (const id of UPGRADE_ORDER) sh.upgrades[id] = UPGRADES[id].maxLevel;
+                        if (sh.status !== 'sunk') sh.hp += st.statsOf(sh).maxHp - before;
+                    }
+                    st.commit();
+                    st.toast('DEV: WHOLE FLEET FULLY UPGRADED');
+                    return st.ships.length;
+                },
+                /** Testing: sail instantly to a port (0-4), e.g. fleet.port(2) for Gullwing Landing (sells every ship). */
+                port: (i: number) => {
+                    const p = self.ports[i];
+                    if (!p || !self.ship) return null;
+                    const s = p.layout.spawn;
+                    self.ship.x = s.x;
+                    self.ship.y = s.y;
+                    self.ship.stop();
+                    self.cameras.main.centerOn(s.x, s.y);
+                    return p.layout.name;
+                },
                 /** Spawn an NPC ahead of the player, e.g. fleet.spawn('pirate'). */
                 spawn: (role: NpcRole, dist = 260) => {
                     const s = self.ship;
@@ -317,7 +360,8 @@ export class OceanScene extends Scene {
         return {
             x: ship.x,
             y: ship.y,
-            reload: (side) => 1 - ship.reloadLeft(side) / Math.max(1, this.state.stats.reloadMs),
+            reload: (gun) => 1 - ship.reloadLeft(gun) / Math.max(1, this.state.stats.reloadMs),
+            chasers: () => ({ bow: this.state.stats.bowGuns > 0, stern: this.state.stats.sternGuns > 0 }),
             abilityStatus: () => {
                 if (!SHIP_CLASSES[active.cls].ability.active) return { text: 'PASSIVE - ALWAYS ON', ready: true };
                 if (ship.tailwindActive) return { text: `ACTIVE ${Math.ceil(ship.tailwindRemaining / 1000)}S`, ready: true };
@@ -336,10 +380,27 @@ export class OceanScene extends Scene {
         if (ship.triggerTailwind()) this.state.toast('TAILWIND!');
     }
 
-    /** Fire a broadside if that side is loaded. side: -1 port, 1 starboard. */
-    private fire(side: -1 | 1): void {
+    /**
+     * Fire a gun position if it's loaded: -1 port / 1 starboard broadside, or
+     * the bow / stern chaser (unlocked by Cannons upgrades 1 and 2).
+     */
+    private fire(gun: GunPosition): void {
         const ship = this.ship;
         if (!ship || !this.state.seaworthy) return;
+        const st = this.state.stats;
+        const chaser = gun === 'bow' || gun === 'stern';
+        if (chaser && !(gun === 'bow' ? st.bowGuns : st.sternGuns)) {
+            if (this.clock - this.lastHarbourFireToast > 2000) {
+                this.lastHarbourFireToast = this.clock;
+                const cls = this.state.active ? SHIP_CLASSES[this.state.active.cls] : null;
+                this.state.toast(
+                    gun === 'stern' && cls && !cls.sternGun
+                        ? `${cls.name}S HAVE NO STERN GUN`
+                        : `NO ${gun.toUpperCase()} GUN - UPGRADE CANNONS TO TIER ${gun === 'bow' ? BOW_GUN_TIER : STERN_GUN_TIER}`
+                );
+            }
+            return;
+        }
         if (inSafeHarbour(ship.x, ship.y)) {
             if (this.clock - this.lastHarbourFireToast > 2000) {
                 this.lastHarbourFireToast = this.clock;
@@ -347,9 +408,9 @@ export class OceanScene extends Scene {
             }
             return;
         }
-        if (!ship.tryFire(side)) return;
-        const st = this.state.stats;
-        this.cannons.fire(ship, side, Math.max(1, Math.ceil(st.cannons / 2)), st.cannonDamage);
+        if (!ship.tryFire(gun)) return;
+        if (gun === 'bow' || gun === 'stern') this.cannons.fireChaser(ship, gun === 'bow' ? 1 : -1, st.cannonDamage);
+        else this.cannons.fire(ship, gun, Math.max(1, Math.ceil(st.cannons / 2)), st.cannonDamage);
     }
 
     private onPointer(p: Input.Pointer): void {
@@ -358,10 +419,15 @@ export class OceanScene extends Scene {
         if (hud?.isPointerOverUI?.(p)) return;
         const w = this.cameras.main.getWorldPoint(p.x, p.y);
         if (p.rightButtonDown()) {
-            // Fire the broadside that faces the pointer.
+            // Fire whichever guns face the pointer: bow / stern chasers within ~35° of dead ahead / astern.
             const s = this.ship;
+            const st = this.state.stats;
             const right = (w.x - s.x) * Math.cos(s.heading) + (w.y - s.y) * Math.sin(s.heading);
-            this.fire(right >= 0 ? 1 : -1);
+            const ahead = (w.x - s.x) * Math.sin(s.heading) - (w.y - s.y) * Math.cos(s.heading);
+            const angle = Math.atan2(right, ahead); // 0 = dead ahead, ±PI = dead astern
+            if (st.bowGuns && Math.abs(angle) < CHASER_ARC) this.fire('bow');
+            else if (st.sternGuns && Math.abs(angle) > Math.PI - CHASER_ARC) this.fire('stern');
+            else this.fire(right >= 0 ? 1 : -1);
         } else if (p.leftButtonDown()) this.ship.setTarget(w.x, w.y);
     }
 
@@ -392,6 +458,8 @@ export class OceanScene extends Scene {
             if (Input.Keyboard.JustDown(this.keys.ability)) this.useAbility();
             if (Input.Keyboard.JustDown(this.keys.port)) this.fire(-1);
             if (Input.Keyboard.JustDown(this.keys.starboard)) this.fire(1);
+            if (Input.Keyboard.JustDown(this.keys.bow)) this.fire('bow');
+            if (Input.Keyboard.JustDown(this.keys.stern)) this.fire('stern');
             if (Input.Keyboard.JustDown(this.keys.formation)) {
                 const next = FORMATIONS[(FORMATIONS.indexOf(this.state.formation) + 1) % FORMATIONS.length];
                 this.state.setFormation(next);

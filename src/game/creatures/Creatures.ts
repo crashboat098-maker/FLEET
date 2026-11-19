@@ -40,8 +40,8 @@ abstract class Creature implements Combatant {
         x: number,
         y: number,
         readonly maxHp: number,
-        readonly halfLen: number,
-        readonly beam: number
+        public halfLen: number,
+        public beam: number
     ) {
         this.x = x;
         this.y = y;
@@ -111,6 +111,17 @@ abstract class Creature implements Combatant {
 
 // --------------------------------------------------------------------- shark
 
+/** How long a shark stays up, and its speed / hit size while surfaced. */
+const SHARK_SURFACE = { afterBiteMs: 2600, beforeDashMs: 1800, roamMs: 2200, speedMult: 0.4, halfLen: 18, beam: 10 };
+const SHARK_DIVED = { halfLen: 12, beam: 6 };
+/** Cannonball hits needed to kill a shark. */
+const SHARK_HITS_TO_KILL = 3;
+
+/**
+ * Sharks hunt underwater (only the fin shows, and cannonballs pass over
+ * them) but come up to the surface — after every bite, just before a
+ * charge, and now and then while roaming — and can only be shot then.
+ */
 export class Shark extends Creature {
     readonly role = 'shark' as const;
     readonly name = 'SHARK';
@@ -121,24 +132,61 @@ export class Shark extends Creature {
     private biteReady = 0;
     private orbit = Math.random() < 0.5 ? 1 : -1;
     private home: { x: number; y: number };
+    private surfacedUntil = 0;
+    /** Has it already surfaced during this stalk (so the next step is the charge)? */
+    private surfacedThisStalk = false;
+    private nextRoamSurface = 3000 + Math.random() * 5000;
+    private wasSurfaced = false;
 
     constructor(scene: Scene, x: number, y: number) {
-        super(scene, x, y, 30, 12, 6);
+        super(scene, x, y, 30, SHARK_DIVED.halfLen, SHARK_DIVED.beam);
         this.home = { x, y };
-        this.body = scene.add.image(x, y, CombatTextures.SharkShadow).setScale(S).setDepth(Depth.Seabed + 1);
+        this.body = scene.add.image(x, y, CombatTextures.SharkShadow).setScale(S).setDepth(Depth.Seabed + 1).setFlipX(true);
         this.fin = scene.add.image(x, y, CombatTextures.SharkFin).setScale(S).setDepth(Depth.Collectible + 1);
+    }
+
+    get submerged(): boolean {
+        return this.clock >= this.surfacedUntil;
+    }
+
+    /** Every hit takes a third of its health, whatever fired it: three hits and it's done. */
+    override takeHit(_damage: number, source: DamageSource, from: Combatant | null): void {
+        super.takeHit(this.maxHp / SHARK_HITS_TO_KILL, source, from);
+    }
+
+    private surface(ms: number): void {
+        this.surfacedUntil = Math.max(this.surfacedUntil, this.clock + ms);
+    }
+
+    /** Swap visuals and hit size when the shark breaks the surface or dives. */
+    private syncSurface(): void {
+        const up = !this.submerged;
+        if (up === this.wasSurfaced) return;
+        this.wasSurfaced = up;
+        this.halfLen = up ? SHARK_SURFACE.halfLen : SHARK_DIVED.halfLen;
+        this.beam = up ? SHARK_SURFACE.beam : SHARK_DIVED.beam;
+        this.body.setTexture(up ? CombatTextures.SharkBody : CombatTextures.SharkShadow).setFlipX(!up).setDepth(up ? Depth.Ship - 1 : Depth.Seabed + 1);
+        this.fin.setVisible(!up);
+        const splash = this.scene.add.particles(this.x, this.y, 'fx-splash', { speed: { min: 15, max: 45 }, lifespan: 500, scale: { start: S, end: S * 1.5 }, alpha: { start: 0.9, end: 0 }, emitting: false });
+        splash.setDepth(Depth.Ship).explode(up ? 8 : 5);
+        this.scene.time.delayedCall(700, () => splash.destroy());
     }
 
     update(deltaMs: number, ctx: CreatureContext): void {
         if (!this.alive) return;
         const dt = deltaMs / 1000;
         this.clock += deltaMs;
-        if (this.hpRatio < 0.35 && this.mode !== 'flee') {
+        // Flees only once nearly dead (never after just two hits, or it could never be finished off).
+        if (this.hpRatio < 0.2 && this.mode !== 'flee') {
             this.mode = 'flee';
             this.modeUntil = this.clock + 4000;
+            this.surfacedUntil = 0; // dives to escape
         }
         if (this.clock % 600 < deltaMs && this.mode === 'roam') this.target = this.pickPrey(ctx, 420, true);
         const t = this.target && this.target.alive && !isProtected(this.target) ? this.target : null;
+        // Slow and thrashing while up at the surface.
+        const pace = this.submerged ? 1 : SHARK_SURFACE.speedMult;
+        const thrash = this.submerged ? 0 : Math.sin(this.clock / 90) * 0.6;
 
         if (this.mode === 'flee') {
             const a = t ? Math.atan2(this.x - t.x, -(this.y - t.y)) : this.heading;
@@ -151,8 +199,12 @@ export class Shark extends Creature {
             }
         } else if (!t) {
             this.mode = 'roam';
+            if (this.clock > this.nextRoamSurface) {
+                this.surface(SHARK_SURFACE.roamMs);
+                this.nextRoamSurface = this.clock + 6000 + Math.random() * 6000;
+            }
             const a = Math.atan2(this.home.x - this.x, -(this.home.y - this.y)) + Math.sin(this.clock / 1800) * 1.4;
-            this.swim(a, 28, 1.5, dt, ctx.collision);
+            this.swim(a + thrash, 28 * pace, 1.5, dt, ctx.collision);
         } else {
             const dx = t.x - this.x;
             const dy = t.y - this.y;
@@ -160,13 +212,20 @@ export class Shark extends Creature {
             if (this.mode === 'roam') {
                 this.mode = 'stalk';
                 this.modeUntil = this.clock + 2200 + Math.random() * 2000;
+                this.surfacedThisStalk = false;
             }
             if (this.mode === 'stalk') {
-                // Circle the ship before darting in.
+                // Circle the ship, come up for a look, then dart in.
                 const d = Math.hypot(dx, dy);
                 const a = bearing + this.orbit * (Math.PI / 2 - (d > 110 ? 0.6 : 0));
-                this.swim(a, 55, 2.5, dt, ctx.collision);
-                if (this.clock > this.modeUntil) this.mode = 'dash';
+                this.swim(a + thrash, 55 * pace, 2.5, dt, ctx.collision);
+                if (this.clock > this.modeUntil) {
+                    if (!this.surfacedThisStalk) {
+                        this.surfacedThisStalk = true;
+                        this.surface(SHARK_SURFACE.beforeDashMs);
+                        this.modeUntil = this.clock + SHARK_SURFACE.beforeDashMs;
+                    } else this.mode = 'dash';
+                }
             } else {
                 this.swim(bearing, 100, 4, dt, ctx.collision);
                 if (hullDistance(t, this.x, this.y) < t.beam + 8 && this.clock > this.biteReady) {
@@ -174,20 +233,29 @@ export class Shark extends Creature {
                     this.biteReady = this.clock + 1800;
                     this.mode = 'stalk';
                     this.modeUntil = this.clock + 1800 + Math.random() * 1500;
+                    // Thrashes at the surface after a bite — the best moment to shoot it.
+                    this.surface(SHARK_SURFACE.afterBiteMs);
+                    this.surfacedThisStalk = true;
                 }
                 if (Math.hypot(dx, dy) > 500) this.target = null;
             }
         }
+        this.syncSurface();
         this.body.setPosition(this.x, this.y).setRotation(this.heading - Math.PI / 2);
         this.fin.setPosition(this.x, this.y - 4);
     }
 
     protected flashHit(): void {
         this.fin.setTint(0xff6b5a);
-        this.scene.time.delayedCall(120, () => this.fin.active && this.fin.clearTint());
+        this.body.setTint(0xff6b5a);
+        this.scene.time.delayedCall(120, () => {
+            if (this.fin.active) this.fin.clearTint();
+            if (this.body.active) this.body.clearTint();
+        });
     }
 
     protected die(): void {
+        this.surfacedUntil = 0;
         this.scene.tweens.add({ targets: [this.fin, this.body], alpha: 0, y: '+=6', duration: 900, onComplete: () => (this.gone = true) });
     }
 

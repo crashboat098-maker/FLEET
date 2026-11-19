@@ -4,6 +4,7 @@ import { Combatant, CombatWorld } from '../combat/Combatant';
 import { AnyCreature, Kraken, Serpent, Shark } from '../creatures/Creatures';
 import { CollectibleSystem, Pickup } from '../entities/CollectibleSystem';
 import { CombatTextures } from '../gfx/combatTextures';
+import { formationOffset } from '../ships/formation';
 import { randomShipName } from '../ships/profile';
 import { emptyUpgrades, ShipClassId, UpgradeLevels } from '../ships/shipClasses';
 import { ItemType } from '../state/items';
@@ -279,7 +280,12 @@ export class Director {
         const flag = this.flagship;
         if (!flag) return;
         for (const ship of wanted) {
-            if (this.npcs.some((n) => n.owned === ship && n.alive)) continue;
+            const sailing = this.npcs.find((n) => n.owned === ship && n.alive);
+            if (sailing) {
+                // Already at sea: pick up any repairs or upgrades made at port.
+                sailing.syncFromOwned();
+                continue;
+            }
             const slot = this.slotFor(wanted.indexOf(ship), flag);
             const npc = this.spawn({ role: 'escort', cls: ship.cls, owned: ship, x: slot.x, y: slot.y, heading: flag.heading });
             npc.unstick();
@@ -295,22 +301,7 @@ export class Director {
         const fy = -Math.cos(flag.heading);
         const rx = Math.cos(flag.heading);
         const ry = Math.sin(flag.heading);
-        const k = index + 1;
-        let back = 0;
-        let side = 0;
-        switch (this.state.formation) {
-            case 'line':
-                back = 90 * k;
-                break;
-            case 'wedge':
-                back = 70 * Math.ceil(k / 2);
-                side = (k % 2 ? -1 : 1) * 60 * Math.ceil(k / 2);
-                break;
-            case 'flank':
-                back = 10;
-                side = (k % 2 ? -1 : 1) * 75 * Math.ceil(k / 2);
-                break;
-        }
+        const { back, side } = formationOffset(this.state.formation, index);
         return { x: flag.x - fx * back + rx * side, y: flag.y - fy * back + ry * side };
     }
 

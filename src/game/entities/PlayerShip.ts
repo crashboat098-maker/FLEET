@@ -1,7 +1,6 @@
 import { Input, Scene } from 'phaser';
-import { SPEED_CAP } from '../config/constants';
 import { Combatant, Faction, isProtected, newUid } from '../combat/Combatant';
-import { ShipClassId, ShipStats, TAILWIND } from '../ships/shipClasses';
+import { ShipClassId, ShipStats, speedCapOf, TAILWIND } from '../ships/shipClasses';
 import type { DamageSource } from '../state/PlayerState';
 import { CollisionWorld } from '../world/CollisionWorld';
 import { Depth } from '../world/worldConfig';
@@ -15,6 +14,10 @@ interface Controls {
 }
 
 const wrapAngle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
+
+/** Where guns fire from: -1 port broadside, 1 starboard broadside, or the bow / stern chasers. */
+export type GunPosition = -1 | 1 | 'bow' | 'stern';
+const gunKey = (g: GunPosition) => (g === -1 ? 'port' : g === 1 ? 'starboard' : g);
 
 /**
  * The player's flagship: keyboard + mouse steering, Tailwind, broadside
@@ -37,8 +40,8 @@ export class PlayerShip extends ShipBody implements Combatant {
     private tailwindUntil = 0;
     private tailwindReadyAt = 0;
     private clock = 0;
-    /** Broadside reload: ms timestamps when each side is ready (port = -1, starboard = 1). */
-    private reloadReady = { port: 0, starboard: 0 };
+    /** Reload: ms timestamps when each gun position is ready again. */
+    private reloadReady = { port: 0, starboard: 0, bow: 0, stern: 0 };
     /** Called with the speed lost in a collision with land or a dock. */
     onImpact: ((impactSpeed: number) => void) | null = null;
     /** Damage from cannonballs, rams, creatures (wired to PlayerState). */
@@ -87,17 +90,15 @@ export class PlayerShip extends ShipBody implements Combatant {
 
     // ------------------------------------------------------------- cannons
 
-    /** ms until a side can fire again. */
-    reloadLeft(side: -1 | 1): number {
-        return Math.max(0, (side < 0 ? this.reloadReady.port : this.reloadReady.starboard) - this.clock);
+    /** ms until a gun position can fire again. -1 / 1 = port / starboard broadside. */
+    reloadLeft(gun: GunPosition): number {
+        return Math.max(0, this.reloadReady[gunKey(gun)] - this.clock);
     }
 
-    /** Start reloading a side; returns false if it isn't ready yet. */
-    tryFire(side: -1 | 1): boolean {
-        if (!this.controlsEnabled || this.reloadLeft(side) > 0) return false;
-        const t = this.clock + this.getStats().reloadMs;
-        if (side < 0) this.reloadReady.port = t;
-        else this.reloadReady.starboard = t;
+    /** Start reloading a gun position; returns false if it isn't ready yet. */
+    tryFire(gun: GunPosition): boolean {
+        if (!this.controlsEnabled || this.reloadLeft(gun) > 0) return false;
+        this.reloadReady[gunKey(gun)] = this.clock + this.getStats().reloadMs;
         return true;
     }
 
@@ -118,10 +119,10 @@ export class PlayerShip extends ShipBody implements Combatant {
         this.tailwindReadyAt = this.clock + TAILWIND.cooldownMs;
         return true;
     }
-    /** Current top speed including Tailwind — never above SPEED_CAP. */
+    /** Current top speed including Tailwind — never above this class's speed cap. */
     get topSpeed(): number {
         const base = this.getStats().maxSpeed;
-        return Math.min(SPEED_CAP, this.tailwindActive ? base * TAILWIND.speedMult : base);
+        return Math.min(speedCapOf(this.cls), this.tailwindActive ? base * TAILWIND.speedMult : base);
     }
 
     // ---------------------------------------------------------------- input

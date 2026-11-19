@@ -12,6 +12,7 @@ export const CombatTextures = {
     Flash: 'fx-flash',
     SharkFin: 'shark-fin',
     SharkShadow: 'shark-shadow',
+    SharkBody: 'shark-body',
     SerpentHead: 'serpent-head',
     SerpentSeg: 'serpent-seg',
     KrakenHead: 'kraken-head',
@@ -49,6 +50,23 @@ export const generateCombatTextures = (scene: Scene): void => {
             if (d < 1 || (x > 17 && Math.abs(y - 3.5) < (x - 16) * 0.8 && x < 22)) shadow.set(x, y, 0x0b2a4a, 0.55);
         }
     shadow.toTexture(scene, K.SharkShadow);
+    // Surfaced shark seen from above: head (and eyes) to the right, forked tail left, pectoral fins.
+    textureFromRows(
+        scene,
+        K.SharkBody,
+        [
+            'o...........oo........',
+            'oo.........ooo........',
+            '.oo....oooooooooooo...',
+            '..ooooGGGGGGGGGGGGGoo.',
+            '...oGGLLLLLLLLLLLGGGeo',
+            '..ooooGGGGGGGGGGGGGoo.',
+            '.oo....oooooooooooo...',
+            'oo.........ooo........',
+            'o...........oo........'
+        ],
+        { o: 0x3a4752, G: 0x8697a3, L: 0x6a7a86, e: 0x101010 }
+    );
 
     // Sea serpent: armoured head with glowing eyes, scaled body segments.
     textureFromRows(
